@@ -21,7 +21,9 @@
  *   The step rate of RESTORE (low nibble) is kept for the implied seeks of
  *   READ and WRITE; RESTORE with 0 = buffered seek.
  *   Geometry comes from the DMVGEOM1 block on cylinder 0, head 0, sector
- *   ID 1 (copy on ID 2); a unit without a valid block counts as absent.
+ *   ID 1 (copy on ID 2); the DOS ports treat a unit without a valid block
+ *   as absent. Here such a unit is still read, as 4 heads/17 sectors, so
+ *   dmvhd can look at disks in NCR's original MS-DOS 2.11 format.
  *   Units 0-2 are HD1-HD3; ELKS's ata-cf handles two.
  *   Before handing the machine back to the Z80 unit 0 must be selected
  *   (reset-dmv.c does), so every access here ends with unit 0 selected.
@@ -217,6 +219,21 @@ int ATPROC ata_init(int drive, struct drive_infot *drivep)
             printk("WD1001 unit %d, DMVGEOM1 precomp %u, step %u, interleave %u\n",
                 drive, b[14] | (b[15] << 8), b[18], b[19]);
         }
+    } else if (read_chs(drive, 0, 0, 0, (unsigned char __far *)b) == 0) {
+        /* no DMVGEOM1: maybe a disk in NCR's original MS-DOS 2.11 format
+           (4 heads, 17 sectors, no MBR). The DOS ports treat such a unit
+           as absent; here it stays readable for dmvhd, with the physical
+           layout of those disks and the largest cylinder count. */
+        geo[drive].cyls = 1024;
+        geo[drive].heads = 4;
+        geo[drive].spt = 17;
+        drivep->cylinders = 1024;
+        drivep->heads = 4;
+        drivep->sectors = 17;
+        drivep->sector_size = DMV_SECTOR_SIZE;
+        drivep->fdtype = HARDDISK;
+        printk("cf%c: WD1001 unit %d without DMVGEOM1, read as 4 heads/17 sectors\n",
+            'a' + drive, drive);
     } else
         printk("cf%c: unit %d ready, but no valid DMVGEOM1 block\n", 'a' + drive, drive);
     heap_free(b);

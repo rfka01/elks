@@ -1,8 +1,16 @@
 # ELKS for the NCR Decision Mate V
 
 Status (Nov 2026, tested in MAME only): boots to a shell on the 8088/V20
-cards K235 (with 8259) and K230 (no interrupts), 512 KB (K208). Hard disk
-driver (WD1001 on the K012) and the disk diagnosis tool are next.
+cards K235 (with 8259) and K230 (no interrupts), 512 KB (K208). The WD1001
+(K012) is read through ata-cf (`/dev/hda`, read only), and `dmvhd` checks
+a DMV disk: DMVGEOM1, master boot record, extended partitions, boot
+sectors, FAT copies, cluster chains - or NCR's original MS-DOS 2.11
+layout (one partition over 4 heads, or 2 x 5 MB on head pairs).
+
+Tested: DR DOS 3.41 disks with 20 MB (type 04) and 41 MB (type 06), an
+MS-DOS 3.3 disk with primary and extended partition, synthetic original
+format disks (10 MB, 2 x 5 MB). `mount -t fat -o ro /dev/hda4 /mnt` works
+on the DR partitions.
 
 Purpose: an independent check of DMV hard disks - parameters, partition
 tables, FAT file systems - written by people other than those who wrote

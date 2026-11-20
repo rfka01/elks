@@ -32,7 +32,7 @@ partype: partype.o
 	$(LD) $(LDFLAGS) -o partype partype.o $(LDLIBS)
 
 dmvhd: dmvhd.o
-	$(LD) $(LDFLAGS) -o dmvhd dmvhd.o $(LDLIBS)
+	$(LD) $(LDFLAGS) -o dmvhd -maout-heap=0x6000 dmvhd.o $(LDLIBS)
 
 ramdisk: ramdisk.o
 	$(LD) $(LDFLAGS) -o ramdisk ramdisk.o $(LDLIBS)

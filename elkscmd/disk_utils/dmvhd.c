@@ -106,8 +106,17 @@ static void warn(const char *fmt, ...)
     warnungen++;
 }
 
+/* NCR-Originalformat 2 x 5 MB: eine Haelfte liegt auf einem Kopfpaar.
+   map_hp = Koepfe der Haelfte (0: keine Umrechnung), map_fh = erster Kopf */
+static unsigned int map_hp, map_fh;
+static int original;                    /* NCR-Originalformat: 16BIT im Bootsektor ist richtig */
+
 static int rd(ulong lba, uchar *b)
 {
+    if (map_hp) {
+        ulong spur = lba / 17;
+        lba = ((spur / map_hp) * 4 + map_fh + spur % map_hp) * 17 + lba % 17;
+    }
     if (lseek(fd, (long)lba * SECT, SEEK_SET) < 0 || read(fd, b, SECT) != SECT) {
         err("Sektor %lu nicht lesbar\n", lba);
         return -1;
@@ -162,8 +171,13 @@ static int geometrie(void)
             printf("  Kopie auf Sektor-ID 2 gleich\n");
     }
     if (!ok) {
-        err("kein gueltiger DMVGEOM1-Block - fuer die DOS-Ports gilt die Einheit als nicht vorhanden\n");
-        return -1;
+        warn("kein gueltiger DMVGEOM1-Block - fuer die DOS-Ports gilt die Einheit als\n"
+             "  nicht vorhanden. Weiter mit 4 Koepfen, 17 Sektoren (NCR-Originalformat?)\n");
+        cyls = 0;
+        heads = 4;
+        spt = 17;
+        disksects = 0xFFFFFFFFL;
+        return 0;
     }
     disksects = (ulong)cyls * heads * spt;
     printf("  %lu Sektoren, %lu KB\n", disksects, disksects / 2);
@@ -203,8 +217,8 @@ static int mbr(void)
     else
         printf("  Kennung 16BIT vorhanden\n");
     if (buf[510] != 0x55 || buf[511] != 0xAA) {
-        err("keine Kennung 55AA - kein Partitionsschema (Altplatte DOS 2.11?)\n");
-        return -1;
+        printf("  keine Kennung 55AA - kein Partitionsschema\n");
+        return 1;                       /* Originalformat pruefen */
     }
     printf("  Nr Boot Typ          Start-CHS     Ende-CHS          LBA      Sektoren\n");
     for (i = 0; i < 4; i++) {
@@ -521,7 +535,9 @@ static void partition(struct part *pp, const char *was)
     if (rd(p0, b) < 0)
         return;
     printf("  OEM \"%.8s\"", b + 3);
-    if (!memcmp(b + 3, "IBM  3.3", 8))
+    if (original)
+        printf(" - Originalformat: %s\n", b[3] == '1' ? "bootfaehig" : "nicht bootfaehig");
+    else if (!memcmp(b + 3, "IBM  3.3", 8))
         printf(" - wie von den DMV-Ports verlangt\n");
     else if (!memcmp(b + 3, "16BIT", 5)) {
         printf("\n");
@@ -530,7 +546,7 @@ static void partition(struct part *pp, const char *was)
         printf("\n");
         warn("OEM nicht \"IBM  3.3\" - MS-DOS 3.3 nimmt den BPB dann nicht\n");
     }
-    if (b[510] != 0x55 || b[511] != 0xAA)
+    if (!original && (b[510] != 0x55 || b[511] != 0xAA))
         warn("Bootsektor ohne 55AA\n");
     bps = w(b + 11);
     spc = b[13];
@@ -552,11 +568,11 @@ static void partition(struct part *pp, const char *was)
         err("BPB nennt %lu Sektoren, der Partitionseintrag %lu\n", totsec, pp->size);
     if (dw(b + 28) != pp->hidden)
         err("versteckte Sektoren %lu, erwartet %lu\n", dw(b + 28), pp->hidden);
-    if (w(b + 24) != spt || w(b + 26) != heads)
+    if (!original && (w(b + 24) != spt || w(b + 26) != heads))
         warn("BPB-Geometrie %u/%u, DMVGEOM1 %u/%u\n", w(b + 24), w(b + 26), spt, heads);
     if (b[21] != 0xF8)
         warn("Medienbyte %02x (Platte: F8)\n", b[21]);
-    if ((b[0x24] & ~0x18) != 0)
+    if (!original && (b[0x24] & ~0x18) != 0)
         warn("Byte 24h hat Bits ausser der Einheit (18h)\n");
 
     fatlba = p0 + reserved;
@@ -579,6 +595,77 @@ static void partition(struct part *pp, const char *was)
             err("FAT beginnt mit %02x, Medienbyte %02x\n", fatbuf[0], b[21]);
     }
     fatpruefung(0);
+}
+
+static int bpb_ok(uchar *b, unsigned int koepfe)
+{
+    unsigned int spc = b[13];
+
+    return w(b + 11) == SECT && spc && !(spc & (spc - 1)) && b[16] && w(b + 17) &&
+        w(b + 19) && w(b + 22) && w(b + 24) == 17 && w(b + 26) == koepfe;
+}
+
+/* wie HDIMPORT: sieht der Sektor wie ein CP/M-Verzeichnis aus? */
+static int cpm_dir(uchar *b)
+{
+    int i, k;
+
+    for (i = 0; i < 16; i++, b += 32) {
+        if (b[0] == 0xE5)
+            continue;
+        if (b[0] > 15 || b[12] > 31 || b[15] > 128)
+            return 0;
+        for (k = 1; k < 12; k++)
+            if ((b[k] & 0x7F) < 0x20 || (b[k] & 0x7F) > 0x7E)
+                return 0;
+    }
+    return 1;
+}
+
+/* NCR MS-DOS 2.11 Originalformat (CONFIG.COM / FMT20): kein MBR, kein
+   DMVGEOM1; physisch 4 Koepfe, 17 Sektoren. 10 oder 20 MB: eine FAT12-
+   Partition ueber alle Koepfe. 2 x 5 MB: Haelfte A auf Kopf 0-1, B auf
+   Kopf 2-3, jede DOS (BPB mit 2 Koepfen) oder CP/M. */
+static void originalformat(void)
+{
+    struct part p;
+    int h;
+
+    printf("\nNCR-Originalformat (MS-DOS 2.11)?\n");
+    original = 1;
+    if (heads != 4 || spt != 17)
+        warn("DMVGEOM1 nennt %u Koepfe/%u Sektoren, das Originalformat hat 4/17\n", heads, spt);
+    if (rd(0, buf) < 0)
+        return;
+    if (bpb_ok(buf, 4)) {
+        printf("  eine Partition ueber 4 Koepfe (10 oder 20 MB)\n");
+        p.typ = 0x01;
+        p.start = 0;
+        p.size = w(buf + 19);
+        p.hidden = dw(buf + 28);
+        partition(&p, "Originalformat, eine Partition");
+        return;
+    }
+    for (h = 0; h < 2; h++) {
+        map_hp = 2;
+        map_fh = 2 * h;
+        if (rd(0, buf) < 0)
+            break;
+        if (bpb_ok(buf, 2)) {
+            printf("\n  Haelfte %c (Kopf %d-%d): DOS\n", 'A' + h, 2 * h, 2 * h + 1);
+            p.typ = 0x01;
+            p.start = 0;
+            p.size = w(buf + 19);
+            p.hidden = dw(buf + 28);
+            partition(&p, h ? "Originalformat, Haelfte B" : "Originalformat, Haelfte A");
+        } else if (cpm_dir(buf))
+            printf("\n  Haelfte %c (Kopf %d-%d): CP/M - Inhalt prueft dmvhd nicht\n",
+                'A' + h, 2 * h, 2 * h + 1);
+        else
+            printf("\n  Haelfte %c (Kopf %d-%d): weder DOS noch CP/M erkannt\n",
+                'A' + h, 2 * h, 2 * h + 1);
+    }
+    map_hp = 0;
 }
 
 static int fattyp(int t)
@@ -659,7 +746,10 @@ int main(int argc, char **argv)
         return 2;
     }
     printf("dmvhd - Plattendiagnose NCR DMV, nur lesend - %s\n\n", dev);
-    if (geometrie() == 0 && mbr() == 0)
+    i = -1;
+    if (geometrie() == 0 && (i = mbr()) == 1)
+        originalformat();
+    else if (i == 0)
         for (i = 0; i < 4; i++) {
             char was[20];
             struct part p = pt[i];
