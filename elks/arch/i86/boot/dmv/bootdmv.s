@@ -73,6 +73,7 @@ start:
 cur_lba         dw 0                ; current source LBA
 sectors_left    dw 0                ; sectors still to read for this region
 run_len         dw 0                ; sectors in the current track-run
+step            db 1                ; 2: 48-tpi disk in a 96-tpi (QD) drive
 dst_seg         dw 0                ; current copy-up destination segment
 dst_ofs         dw 0                ; current copy-up destination offset
 
@@ -122,8 +123,7 @@ boot_main:
     mov word [cur_lba], 1
     mov ax, [kernel_sectors]
     mov [sectors_left], ax
-    mov word [dst_seg], KERNEL_SEG
-    mov word [dst_ofs], KERNEL_OFS
+    mov word [dst_seg], KERNEL_SEG  ; dst_ofs stays 0 (KERNEL_OFS, INITRD_OFS)
     call load_region
     jc .error
 
@@ -136,7 +136,6 @@ boot_main:
     mov ax, [initrd_sectors]
     mov [sectors_left], ax
     mov word [dst_seg], INITRD_SEG
-    mov word [dst_ofs], INITRD_OFS
     call load_region
     jc .error
 
@@ -145,7 +144,6 @@ boot_main:
     out 0x00, al
 
 .handoff:
-    cli
     ; ELKS setup is a PC option ROM: its entry at offset 3 sets the INT 19h
     ; vector and returns, INT 19h then starts the system. Interrupts stay
     ; off; the kernel programs the 8259 and the timer itself.
@@ -172,7 +170,15 @@ load_region:
     cmp word [sectors_left], 0
     jbe .done
     call read_track_run             ; -> scratch, sets run_len; CF on error
-    jc .fail
+    jnc .ok
+    ; Failed: a 40-track disk in an 80-track (QD) drive needs double
+    ; stepping - logical cylinder n sits at physical 2n. Switch once and
+    ; retry the same run, as the DMV DOS boot sectors do.
+    cmp byte [step], 2
+    je .fail
+    mov byte [step], 2
+    jmp .loop
+.ok:
     call copy_run_up                ; scratch -> dst_seg:dst_ofs
     ; Advance the destination by run_len*512 bytes = run_len*32 paragraphs,
     ; in the SEGMENT, keeping dst_ofs fixed and small. A single copy is at most
@@ -287,7 +293,12 @@ read_track_run:
     mov byte [fdc_cmd+6], SPT+1
 
     mov [seek_cmd+1], bl            ; (head<<2)|unit
-    mov [seek_cmd+2], ch            ; track
+    mov al, ch                      ; physical track: cylinder * step
+    cmp byte [step], 2
+    jne .st1
+    shl al, 1
+.st1:
+    mov [seek_cmd+2], al
 
     ; --- SEEK + acknowledge (SENSE INTERRUPT STATUS) ----------------------
     mov cx, 3
@@ -354,6 +365,13 @@ read_track_run:
     and al, 0xC0
     cmp al, 0x80
     jae .read_fail
+    ; IC 01 is also what the FDC says when it did not find the sector -
+    ; e.g. on the wrong cylinder (single stepping in a QD drive). So check
+    ; ST1 (DE OR ND NW MA) and ST2 (CM DD WC BC MD) as well.
+    test byte [.result_buf+1], 0x37
+    jnz .read_fail
+    test byte [.result_buf+2], 0x33
+    jnz .read_fail
 
     clc
     pop dx

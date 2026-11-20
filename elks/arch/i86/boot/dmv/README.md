@@ -37,6 +37,14 @@ starts ELKS from MS-DOS or DR DOS (files ELKS.IMG and ROMFS.BIN next to it).
   near heap ends below it, application memory starts at 64 KB.
 - Console: `conio-dmv.c`, direct uPD7220 text output (ring of two
   partitions for scrolling), 8741 keyboard polled.
+- Boot logo: Tux in a bitmap partition above the text (the GDC runs in
+  mixed mode), until the first scroll gives the two partitions back to the
+  text ring. Colour board: white, yellow, black; mono board: the green
+  plane. `tux-dmv.h` is made by `mktux-dmv.py` from the Linux kernel's
+  80x80 logo. Tux is by Larry Ewing <lewing@isc.tamu.edu> and The GIMP.
+- The kernel image must stay within 64 KB (7000:0 up to the end of 512 KB).
+- The boot sector steps twice per track if a read fails, so the 40-track
+  floppy also boots in an 80-track (QD) drive.
 - Timer: 8253 channel 2 (500 kHz) on IR0 of the K235's 8259. On the K230
   the idle loop watches the counter and raises INT 08h itself
   (`timer-dmv.c`).
