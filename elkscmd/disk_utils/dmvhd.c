@@ -212,14 +212,16 @@ static int mbr(void)
     printf("\nHaupt-Bootsatz (Sektor 0)\n");
     if (rd(0, buf) < 0)
         return -1;
+    if (buf[510] != 0x55 || buf[511] != 0xAA) {
+        printf("  keine Kennung 55AA - kein Partitionsschema\n");
+        if (memcmp(buf + 3, "16BIT", 5))
+            printf("  Sektor 0 ohne 16BIT: von dieser Platte startet die DMV nicht\n");
+        return 1;                       /* Originalformat pruefen */
+    }
     if (memcmp(buf + 3, "16BIT  ", 7))
         err("Kennung ab Byte 3 ist nicht \"16BIT  \" - das Z80-ROM startet davon nicht\n");
     else
         printf("  Kennung 16BIT vorhanden\n");
-    if (buf[510] != 0x55 || buf[511] != 0xAA) {
-        printf("  keine Kennung 55AA - kein Partitionsschema\n");
-        return 1;                       /* Originalformat pruefen */
-    }
     printf("  Nr Boot Typ          Start-CHS     Ende-CHS          LBA      Sektoren\n");
     for (i = 0; i < 4; i++) {
         unsigned int sc, sh, ss, ec, eh, es;
@@ -557,20 +559,22 @@ static void partition(struct part *pp, const char *was)
     fatsz = w(b + 22);
     printf("  BPB: %u Byte/Sektor, %u Sektoren/Cluster, %lu reserviert, %u FATs zu %u\n",
         bps, spc, reserved, nfat, fatsz);
+    /* DOS 2.x: versteckte Sektoren nur 16 Bit, dahinter beginnt der Code */
     printf("       %u Wurzeleintraege, %lu Sektoren, Medium %02x, %u Sektoren/Spur, %u Koepfe, %lu versteckt\n",
-        rootents, totsec, b[21], w(b + 24), w(b + 26), dw(b + 28));
-    printf("  DMV: Byte 24h (Einheit, SDH-Bits) %02x, Byte 25h (Laufwerk) %02x\n", b[0x24], b[0x25]);
+        rootents, totsec, b[21], w(b + 24), w(b + 26), original ? (ulong)w(b + 28) : dw(b + 28));
+    if (!original)
+        printf("  DMV: Byte 24h (Einheit, SDH-Bits) %02x, Byte 25h (Laufwerk) %02x\n", b[0x24], b[0x25]);
     if (bps != SECT || !spc || (spc & (spc - 1)) || !nfat || !fatsz || !rootents) {
         err("BPB unbrauchbar\n");
         return;
     }
     if (totsec != pp->size)
         err("BPB nennt %lu Sektoren, der Partitionseintrag %lu\n", totsec, pp->size);
-    if (dw(b + 28) != pp->hidden)
+    if (!original && dw(b + 28) != pp->hidden)
         err("versteckte Sektoren %lu, erwartet %lu\n", dw(b + 28), pp->hidden);
     if (!original && (w(b + 24) != spt || w(b + 26) != heads))
         warn("BPB-Geometrie %u/%u, DMVGEOM1 %u/%u\n", w(b + 24), w(b + 26), spt, heads);
-    if (b[21] != 0xF8)
+    if (!original && b[21] != 0xF8)
         warn("Medienbyte %02x (Platte: F8)\n", b[21]);
     if (!original && (b[0x24] & ~0x18) != 0)
         warn("Byte 24h hat Bits ausser der Einheit (18h)\n");
@@ -622,6 +626,68 @@ static int cpm_dir(uchar *b)
     return 1;
 }
 
+/* CP/M-Haelfte im Originalformat (Werte wie HDIMPORT): 305 Zylinder x 2
+   Koepfe x 17 = 10370 Sektoren, Bloecke zu 8 KB (16 Sektoren), DSM 647,
+   Verzeichnis in den Bloecken 0-1 (32 Sektoren, 512 Eintraege), 16-Bit-
+   Blocknummern. Geprueft: Eintraege, Blocknummern, doppelt belegte Bloecke. */
+#define CPM_DSM     647
+#define CPM_DIRSEC  32
+
+static void cpm_half(void)
+{
+    uchar b[SECT], map[(CPM_DSM + 8) / 8];
+    unsigned int s, e, k, blk, users = 0;
+    ulong eintraege = 0, dateien = 0, bloecke = 2, doppelt = 0, aussen = 0;
+
+    memset(map, 0, sizeof(map));
+    SETB(map, 0);
+    SETB(map, 1);
+    for (s = 0; s < CPM_DIRSEC; s++) {
+        if (rd(s, b) < 0)
+            return;
+        for (e = 0; e < SECT / 32; e++) {
+            uchar *d = b + e * 32;
+            if (d[0] == 0xE5)
+                continue;
+            if (d[0] > 15) {
+                if (d[0] != 0x20 && d[0] != 0x21)    /* Label/Zeitstempel */
+                    warn("CP/M-Eintrag %u: User %u\n", s * 16 + e, d[0]);
+                continue;
+            }
+            eintraege++;
+            users |= 1 << d[0];
+            if (d[14] == 0 && d[12] <= 3)
+                dateien++;
+            for (k = 0; k < 8; k++) {
+                blk = w(d + 16 + 2 * k);
+                if (!blk)
+                    continue;
+                if (blk > CPM_DSM) {
+                    if (aussen++ < 5)
+                        err("CP/M-Datei %.8s.%.3s: Block %u ueber DSM %u\n",
+                            d + 1, d + 9, blk, CPM_DSM);
+                    continue;
+                }
+                if (BIT(map, blk)) {
+                    if (doppelt++ < 5)
+                        err("CP/M-Datei %.8s.%.3s: Block %u doppelt belegt\n", d + 1, d + 9, blk);
+                    continue;
+                }
+                SETB(map, blk);
+                bloecke++;
+            }
+            if (verbose && d[14] == 0 && d[12] == 0)
+                printf("    %u: %.8s.%.3s\n", d[0], d + 1, d + 9);
+        }
+    }
+    printf("  CP/M: %lu Verzeichniseintraege von 512, %lu Dateien, User", eintraege, dateien);
+    for (k = 0; k < 16; k++)
+        if (users & (1 << k))
+            printf(" %u", k);
+    printf("\n  %lu Bloecke zu 8 KB belegt (mit Verzeichnis), %lu KB frei\n",
+        bloecke, (ulong)(CPM_DSM + 1 - bloecke) * 8);
+}
+
 /* NCR MS-DOS 2.11 Originalformat (CONFIG.COM / FMT20): kein MBR, kein
    DMVGEOM1; physisch 4 Koepfe, 17 Sektoren. 10 oder 20 MB: eine FAT12-
    Partition ueber alle Koepfe. 2 x 5 MB: Haelfte A auf Kopf 0-1, B auf
@@ -658,9 +724,10 @@ static void originalformat(void)
             p.size = w(buf + 19);
             p.hidden = dw(buf + 28);
             partition(&p, h ? "Originalformat, Haelfte B" : "Originalformat, Haelfte A");
-        } else if (cpm_dir(buf))
-            printf("\n  Haelfte %c (Kopf %d-%d): CP/M - Inhalt prueft dmvhd nicht\n",
-                'A' + h, 2 * h, 2 * h + 1);
+        } else if (cpm_dir(buf)) {
+            printf("\n  Haelfte %c (Kopf %d-%d): CP/M\n", 'A' + h, 2 * h, 2 * h + 1);
+            cpm_half();
+        }
         else
             printf("\n  Haelfte %c (Kopf %d-%d): weder DOS noch CP/M erkannt\n",
                 'A' + h, 2 * h, 2 * h + 1);

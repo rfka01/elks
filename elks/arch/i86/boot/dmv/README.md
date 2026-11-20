@@ -32,7 +32,7 @@ starts ELKS from MS-DOS or DR DOS (files ELKS.IMG and ROMFS.BIN next to it).
 - There is no PC BIOS. ELKS is built as a ROM kernel (CONFIG_ROMCODE); the
   boot sector (`bootdmv.s`, from rfka01/gentleos) or `elksdmv.asm` puts the
   kernel image at CONFIG_ROM_BASE (7000:0) and the ROMFS at
-  CONFIG_ROMFS_BASE (3B00:0), then enters setup like an option ROM.
+  CONFIG_ROMFS_BASE (3E00:0), then enters setup like an option ROM.
 - Linear 0F000h-0FFFFh stays free for the firmware (`system-dmv.c`):
   near heap ends below it, application memory starts at 64 KB.
 - Console: `conio-dmv.c`, direct uPD7220 text output (ring of two

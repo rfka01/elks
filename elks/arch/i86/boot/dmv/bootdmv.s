@@ -45,7 +45,7 @@ HEADS           equ 2
 %define ROM_BASE   0x7000
 %endif
 %ifndef ROMFS_BASE
-%define ROMFS_BASE 0x4000
+%define ROMFS_BASE 0x3E00
 %endif
 KERNEL_SEG      equ ROM_BASE
 KERNEL_OFS      equ 0x0000
