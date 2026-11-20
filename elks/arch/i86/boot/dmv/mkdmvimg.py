@@ -21,7 +21,20 @@ def patch(boot, marker, value):
         sys.exit('mkdmvimg: marker %r missing in boot sector' % marker)
     boot[at + 4:at + 6] = value.to_bytes(2, 'little')
 
-boot, image, romfs, out = sys.argv[1:]
+boot, image, romfs, out = sys.argv[1:5]
+
+# The ROMFS lies below the kernel image; check it does not run into it
+# (CONFIG_ROMFS_BASE and CONFIG_ROM_BASE from .config, if at hand).
+try:
+    cfg = dict(l.strip().split('=', 1) for l in open('.config') if l.startswith('CONFIG_ROM'))
+    rb, fb = int(cfg['CONFIG_ROM_BASE'], 16), int(cfg['CONFIG_ROMFS_BASE'], 16)
+    import os
+    need = (os.path.getsize(romfs) + 15) // 16
+    if fb + need > rb:
+        sys.exit('mkdmvimg: ROMFS (%d paragraphs from %04X) runs into the kernel at %04X; '
+                 'lower CONFIG_ROMFS_BASE' % (need, fb, rb))
+except (OSError, KeyError):
+    pass
 boot = bytearray(pad(open(boot, 'rb').read(), 512))
 k = open(image, 'rb').read()
 r = open(romfs, 'rb').read()

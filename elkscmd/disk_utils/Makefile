@@ -6,7 +6,7 @@ include $(BASEDIR)/Makefile-rules
 
 ###############################################################################
 
-PRGS = ramdisk mkfs mkfat fsck partype fdisk df
+PRGS = ramdisk mkfs mkfat fsck partype fdisk df dmvhd
 
 all: $(PRGS)
 
@@ -30,6 +30,9 @@ mkfat: mkfat.o $(TINYPRINTF)
 
 partype: partype.o
 	$(LD) $(LDFLAGS) -o partype partype.o $(LDLIBS)
+
+dmvhd: dmvhd.o
+	$(LD) $(LDFLAGS) -o dmvhd dmvhd.o $(LDLIBS)
 
 ramdisk: ramdisk.o
 	$(LD) $(LDFLAGS) -o ramdisk ramdisk.o $(LDLIBS)
