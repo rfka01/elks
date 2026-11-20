@@ -70,7 +70,7 @@ static int blkdev_open(struct inode *inode, struct file *filp)
     int i;
 
     i = MAJOR(inode->i_rdev);
-#if defined(CONFIG_BLK_DEV_ATA_CF) && defined(CONFIG_ARCH_SOLO86)
+#if defined(CONFIG_BLK_DEV_ATA_CF) && (defined(CONFIG_ARCH_SOLO86) || defined(CONFIG_ARCH_DMV))
     /* map /dev/hd* to /dev/cf*, but not /dev/fd0* */
     if (i == BIOSHD_MAJOR && MINOR(inode->i_rdev) < FIRST_BIOSFD_MINOR) {
         inode->i_rdev = MKDEV(ATHD_MAJOR, MINOR(inode->i_rdev));

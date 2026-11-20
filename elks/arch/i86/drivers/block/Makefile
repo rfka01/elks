@@ -35,7 +35,11 @@ include $(BASEDIR)/Makefile-rules
 
 OBJS  = init.o ll_rw_blk.o genhd.o hdinfo.o
 OBJS += bioshd.o bios.o             # CONFIG_BLK_DEV_BFD / CONFIG_BLK_DEV_BHD
+ifdef CONFIG_ARCH_DMV
+OBJS += wd1001.o ata-cf.o           # CONFIG_BLK_DEV_ATA_CF, WD1001 backend
+else
 OBJS += ata.o ata-cf.o              # CONFIG_BLK_DEV_ATA_CF
+endif
 OBJS += rd.o                        # CONFIG_BLK_DEV_RAM
 OBJS += idequery.o                  # CONFIG_IDE_PROBE
 OBJS += romflash.o                  # CONFIG_ROMFS_FS

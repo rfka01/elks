@@ -24,7 +24,7 @@ cpu 8086
 %define ROM_BASE   0x7000
 %endif
 %ifndef ROMFS_BASE
-%define ROMFS_BASE 0x3B00
+%define ROMFS_BASE 0x4300
 %endif
 
         org     100h

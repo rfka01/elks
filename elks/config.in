@@ -55,7 +55,7 @@ mainmenu_option next_comment
 
 		comment 'Devices'
 
-		bool 'WD1001 hard disk (K012, read only)' CONFIG_BLK_DEV_DMVHD y
+		comment 'WD1001 hard disk (K012): ATA-CF driver with WD1001 backend, read only'
 
 	elif [ "$CONFIG_ARCH_PC98" = "y" ]; then
 
