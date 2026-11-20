@@ -413,10 +413,13 @@ getsp:
         ret
 
 // Halt - wait for next interrupt to save CPU power
+// (NCR DMV: in timer-dmv.c, the K230 has no interrupts at all)
+#ifndef CONFIG_ARCH_DMV
         .global idle_halt
 idle_halt:
         hlt
         ret
+#endif
 
 //------------------------------------------------------------------------------
 // Save BIOS IRQ 0 timer vector

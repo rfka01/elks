@@ -87,6 +87,10 @@ OBJS += conio-pc98.o conio-pc98-asm.o kbd-poll-pc98.o
 OBJS += serial-pc98.o
 endif
 
+ifdef CONFIG_ARCH_DMV
+OBJS += console-headless.o conio-dmv.o kbd-poll.o
+endif
+
 ifdef CONFIG_ARCH_SOLO86
 OBJS += console-headless.o conio-solo86.o kbd-poll.o
 endif

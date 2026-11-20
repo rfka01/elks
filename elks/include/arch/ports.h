@@ -115,6 +115,30 @@
 #define COM0_DATA_PORT      0x22
 #endif
 
+#ifdef CONFIG_ARCH_DMV
+/*
+ * NCR Decision Mate V, see rfka01/dmv_hardware docs/DMV-Hardware-Boot-und-Bildschirm.md
+ * 8253 channel 2 on the main board, 500 kHz input, wired to IR0 of the 8259
+ * on the K235 card; the K230 has no PIC and gets no interrupts at all.
+ */
+#define TIMER_CMDS_PORT     0x83    /* 8253 control word */
+#define TIMER_DATA_PORT     0x82    /* 8253 channel 2 */
+#define TIMER_IRQ           0
+#define TIMER_CLOCK_HZ      500000L
+
+#define PIC1_CMD            0x90    /* 8259 on the K235 */
+#define PIC1_DATA           0x91
+
+#define KBD_DATA_PORT       0x40    /* 8741 keyboard controller */
+#define KBD_STATUS_PORT     0x41    /* status / command */
+
+#define GDC_STATUS_PORT     0xA0    /* uPD7220: status (read), parameter (write) */
+#define GDC_CMD_PORT        0xA1    /* command (write), data (read) */
+
+#define DMV_HD_BASE         0xC0    /* WD1001 on the K012 */
+#define DMV_BANK_PORT       0xE0    /* DMA / Z80 bank 0 (bank n: 0xE0+n) */
+#endif
+
 /* keyboard, kbd-scancode.c*/
 #define KBD_IO          0x60
 #define KBD_CTL         0x61

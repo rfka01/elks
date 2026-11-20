@@ -64,6 +64,9 @@ early_putchar:
         mov     2(%bx),%al
         out     %al,$0xB1
         ret
+#elif defined(CONFIG_ARCH_DMV)
+early_putchar:                  // same signature, conio-dmv.c sets itself up
+        jmp     conio_putc
 #elif defined(CONFIG_ARCH_SOLO86)
 early_putchar:
         mov   %sp,%bx

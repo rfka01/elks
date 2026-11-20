@@ -131,7 +131,7 @@ void INITPROC irq_init(void)
 
 #if defined(CONFIG_ARCH_IBMPC) || defined(CONFIG_ARCH_PC98) || \
     defined(CONFIG_ARCH_SOLO86) || defined(CONFIG_ARCH_SWAN) || \
-    defined(CONFIG_ARCH_NECV25)
+    defined(CONFIG_ARCH_NECV25) || defined(CONFIG_ARCH_DMV)
 
     irq_action[IDX_DIVZERO] = div0_handler;     /* INT 0 divide by 0/divide overflow */
     int_handler_add(IDX_DIVZERO, 0x00, _irqit);

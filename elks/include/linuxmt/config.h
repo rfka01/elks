@@ -177,6 +177,30 @@
 #define UTS_MACHINE             "Solo/86"
 #endif /* CONFIG_ARCH_SOLO86 */
 
+#ifdef CONFIG_ARCH_DMV
+/*
+ * NCR Decision Mate V with 8088/V20 card K235 (8259 PIC) and at least 512K.
+ * No BIOS: the kernel image and the ROMFS are put into RAM by the DMV boot
+ * loader (elks/arch/i86/boot/dmv) at CONFIG_ROM_BASE and CONFIG_ROMFS_BASE,
+ * as if they were ROM. Linear 0F000-0FFFF stays free for the firmware
+ * (cursor and variables at F800, mailbox at FE00, Z80 restart stub at F110).
+ */
+#define MAX_SERIAL              0       /* max number of serial tty devices*/
+#define SETUP_VID_COLS          80      /* video # columns */
+#define SETUP_VID_LINES         25      /* video # lines */
+#define SETUP_CPU_TYPE          CPU_8088 /* processor type (8088 or V20) */
+#define SETUP_MEM_KBYTES        (CONFIG_ROMFS_BASE >> 6) /* RAM below the ROMFS */
+#define SETUP_XMS_KBYTES        0       /* xms memory in 1K bytes */
+#define SETUP_ROOT_DEV          0x0600  /* root device ROMFS */
+#define SETUP_ELKS_FLAGS        0       /* flags for root device type */
+#define SETUP_PART_OFFSETLO     0       /* partition offset low word */
+#define SETUP_PART_OFFSETHI     0       /* partition offset high word */
+#define SYS_CAPS                0       /* no XT/AT capabilities */
+#define UTS_MACHINE             "ncr-dmv"
+#define DMV_FW_LINEAR           0xF000L /* firmware area in bank 0, keep free */
+#define SETUP_USERHEAPSEG       0x1000  /* application memory starts at 64K */
+#endif /* CONFIG_ARCH_DMV */
+
 /* linear address to start XMS buffer allocations from */
 #define XMS_START_ADDR    0x00100000L	/* 1M */
 //#define XMS_START_ADDR  0x00FA0000L	/* 15.6M (Compaq with only 1M ram) */

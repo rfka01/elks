@@ -21,7 +21,9 @@ PRGS = \
     # EOL
 
 ifndef CONFIG_ARCH_SOLO86
+ifndef CONFIG_ARCH_DMV
 PRGS += test_fd
+endif
 endif
 
 all: $(PRGS)

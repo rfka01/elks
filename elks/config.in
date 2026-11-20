@@ -11,7 +11,8 @@ mainmenu_option next_comment
 		 NECV25	CONFIG_ARCH_NECV25 \
 		 PC-98	CONFIG_ARCH_PC98 \
 		 WonderSwan CONFIG_ARCH_SWAN \
-		 SOLO86	CONFIG_ARCH_SOLO86" IBM-PC
+		 SOLO86	CONFIG_ARCH_SOLO86 \
+		 NCR-DMV CONFIG_ARCH_DMV" IBM-PC
 
 	comment 'Platform'
 
@@ -50,6 +51,12 @@ mainmenu_option next_comment
 
 		comment 'Devices'
 
+	elif [ "$CONFIG_ARCH_DMV" = "y" ]; then
+
+		comment 'Devices'
+
+		bool 'WD1001 hard disk (K012, read only)' CONFIG_BLK_DEV_DMVHD y
+
 	elif [ "$CONFIG_ARCH_PC98" = "y" ]; then
 
 		comment 'Devices'
@@ -78,7 +85,8 @@ mainmenu_option next_comment
 	bool 'Use INT 1Ch from BIOS for timer'    CONFIG_TIMER_INT1C  n
 
 	if [ "$CONFIG_ARCH_IBMPC" = "y" ] || [ "$CONFIG_ARCH_8018X" = "y" ] || [ "$CONFIG_ARCH_NECV25" = "y" ] \
-	|| [ "$CONFIG_ARCH_SWAN" = "y" ] || [ "$CONFIG_ARCH_SOLO86" = "y" ]; then
+	|| [ "$CONFIG_ARCH_SWAN" = "y" ] || [ "$CONFIG_ARCH_SOLO86" = "y" ] \
+	|| [ "$CONFIG_ARCH_DMV" = "y" ]; then
 		bool 'Build kernel as ROM-bootable'   CONFIG_ROMCODE      n
     fi
 

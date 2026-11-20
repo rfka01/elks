@@ -50,6 +50,10 @@ ifeq ($(CONFIG_ARCH_SOLO86), y)
 OBJS += irq-solo86.o reset-stubs.o timer-8254.o divzero.o nmi.o
 endif
 
+ifeq ($(CONFIG_ARCH_DMV), y)
+OBJS += irq-dmv.o reset-dmv.o timer-dmv.o system-dmv.o divzero.o nmi.o
+endif
+
 ifeq ($(CONFIG_ARCH_8018X), y)
 OBJS += irq-8018x.o
 ifeq ($(CONFIG_HW_PHILIPS_YES), y)
@@ -66,6 +70,7 @@ endif
 
 ifeq ($(CONFIG_ARCH_SWAN), y)
 OBJS += irq-swan.o reset-swan.o timer-swan.o system-swan.o divzero.o nmi.o
+else ifeq ($(CONFIG_ARCH_DMV), y)
 else
 OBJS += system.o
 endif

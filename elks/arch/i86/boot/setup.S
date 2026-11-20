@@ -1403,6 +1403,29 @@ putc:
 #endif /* CONFIG_ARCH_SOLO86 */
 
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+// Architecture specific routines for the NCR Decision Mate V
+//	The DMV boot loader puts setup, kernel and ROMFS into RAM as if they were
+//	ROM; there is no BIOS. Memory for the kernel is everything below the ROMFS.
+
+#ifdef CONFIG_ARCH_DMV
+
+// Return total memory in Kbytes
+arch_get_mem:
+	mov $SETUP_MEM_KBYTES,%ax
+	ret
+
+arch_set_initseg:
+	mov	$INITSEG,%ax
+	mov	%ax,%ds
+	ret
+
+// no early output from setup
+putc:
+	ret
+
+#endif /* CONFIG_ARCH_DMV */
+
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Architecture specific routines for NEC PC98
 //	Entry points specific for platform setup of SETUP_xxx variables (see config.h)
 //		arch_set_initseg

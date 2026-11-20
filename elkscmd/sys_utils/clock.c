@@ -896,3 +896,17 @@ void do_settime(struct tm *tm)
    ds3231_write(REG_YEAR,  hex_bcd(tm->tm_year));
 }
 #endif
+
+#ifdef CONFIG_ARCH_DMV
+/* NCR DMV: the K803 clock module is optional and not supported yet */
+void do_gettime(struct tm *tm)
+{
+   memset(tm, 0, sizeof(*tm));
+   tm->tm_mday = 1;
+   tm->tm_year = 80;
+}
+
+void do_settime(struct tm *tm)
+{
+}
+#endif
