@@ -2,13 +2,15 @@
 
 Status (Nov 2026, tested in MAME only): boots to a shell on the 8088/V20
 cards K235 (with 8259) and K230 (no interrupts), 512 KB (K208). The WD1001
-(K012) is read through ata-cf (`/dev/cfa`, `/dev/cfb`, read only).
-`dmvhd` gives an overview of both disks: DMVGEOM1, master boot record,
-logical drives, boot sectors - or NCR's original MS-DOS 2.11 layout (one
-partition over 4 heads, or 2 x 5 MB on head pairs, DOS or CP/M halves).
-`dmvhd -e` explains the fields, `dmvhd -v` adds CHS and BPB. `dmvfs` (a
-link to dmvhd) checks the file systems: FAT copies, cluster chains,
-directories, lost clusters; CP/M halves: directory and blocks.
+(K012) is read through ata-cf, units HD1-HD3 as `/dev/cfa`, `cfb`, `cfc`
+(read only). `dmvhd` is a menu in 24 lines with a status line: a page of
+devices (size, geometry, layout, findings), keys 1-3 for the structure of
+a disk (DMVGEOM1, boot record, partitions and logical drives with CHS,
+OEM and BPB - or NCR's original MS-DOS 2.11 layout: one partition over 4
+heads, or 2 x 5 MB, DOS or CP/M halves), D for its file system check (FAT
+copies, chains, directories, lost clusters; CP/M directory and blocks),
+H for help, Q to quit. `dmvhd -n` and `dmvfs` (a link to dmvhd) give the
+same as plain output for scripts.
 
 Tested: DR DOS 3.41 disks with 20 MB (type 04) and 41 MB (type 06), an
 MS-DOS 3.3 disk with primary and extended partition, synthetic original
@@ -42,7 +44,11 @@ starts ELKS from MS-DOS or DR DOS (files ELKS.IMG and ROMFS.BIN next to it).
 - Linear 0F000h-0FFFFh stays free for the firmware (`system-dmv.c`):
   near heap ends below it, application memory starts at 64 KB.
 - Console: `conio-dmv.c`, direct uPD7220 text output (ring of two
-  partitions for scrolling), 8741 keyboard polled.
+  partitions for scrolling), 8741 keyboard polled. A small ANSI subset:
+  cursor position, clear line/screen, highlight (yellow on colour,
+  inverse on mono), and `ESC [ 1 ; 24 r` for 24 scrolling rows plus a
+  status line, which the console keeps in a copy and writes back after
+  every scroll, as NCR's ILF1 and the DMV DOS ports do.
 - Boot logo: Tux in a bitmap partition above the text (the GDC runs in
   mixed mode), until the first scroll gives the two partitions back to the
   text ring. Colour board: white, yellow, black; mono board: the green

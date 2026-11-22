@@ -23,8 +23,13 @@
 #define NUM_MINOR       8       /* max minor devices per drive*/
 #define MINOR_SHIFT     3       /* =log2(NUM_MINOR) shift to get drive num*/
 
+#ifdef CONFIG_ARCH_DMV
+#define MAX_DRIVES      3       /* WD1001 units HD1-HD3 */
+#define NUM_DRIVES      3
+#else
 #define MAX_DRIVES      2       /* <=256/NUM_MINOR*/
 #define NUM_DRIVES      2
+#endif
 
 static int access_count[NUM_DRIVES];
 static struct drive_infot ata_drive_info[NUM_DRIVES];    /* operating drive info */

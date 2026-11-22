@@ -97,6 +97,11 @@ devices:
 	$(MKDEV) /dev/cfb2 b 5 10
 	$(MKDEV) /dev/cfb3 b 5 11
 	$(MKDEV) /dev/cfb4 b 5 12
+	$(MKDEV) /dev/cfc  b 5 16
+	$(MKDEV) /dev/cfc1 b 5 17
+	$(MKDEV) /dev/cfc2 b 5 18
+	$(MKDEV) /dev/cfc3 b 5 19
+	$(MKDEV) /dev/cfc4 b 5 20
 
 #	$(MKDEV) /dev/dha  b 5 0
 #	$(MKDEV) /dev/dhb  b 5 8

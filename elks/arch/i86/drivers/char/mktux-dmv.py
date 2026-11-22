@@ -13,7 +13,9 @@ eight colours. Yellow and orange become yellow, light pixels white, the grey
 of the glow around the body a white outline (Tux is black on a black
 screen otherwise), the rest black. White, yellow and black have red equal
 to green, so only two planes are stored: green (also red) and blue, each
-80 lines of 5 words, bit 0 of a word is the leftmost pixel.
+80 lines of 5 words, bit 0 of a word is the leftmost pixel. Each plane is
+packed: a control byte n, then for n < 80h n+1 words follow as they are,
+for n >= 80h (n & 7Fh)+1 zero words are meant.
 """
 import sys
 
@@ -40,17 +42,39 @@ print('/* Tux for conio-dmv.c, made by mktux-dmv.py - do not edit.')
 print(' * Tux by Larry Ewing <lewing@isc.tamu.edu> and The GIMP. */')
 print('#define TUX_W_WORDS %d' % (w // 16))
 print('#define TUX_H %d' % h)
-print('static const unsigned short tux_planes[2][%d] = {' % (h * w // 16))
-for plane, name in ((1, 'green and red'), (2, 'blue')):
-    print('    {   /* %s */' % name)
+def pack(words):
+    out, i = [], 0
+    while i < len(words):
+        if words[i] == 0:
+            n = 0
+            while i + n < len(words) and words[i + n] == 0 and n < 128:
+                n += 1
+            out.append(0x80 | (n - 1))
+            i += n
+        else:
+            n = 0
+            while i + n < len(words) and words[i + n] != 0 and n < 128:
+                n += 1
+            out.append(n - 1)
+            for v in words[i:i + n]:
+                out += [v & 255, v >> 8]
+            i += n
+    return out
+
+planes = []
+for plane in (1, 2):                    # green (= red), blue
+    words = []
     for y in range(h):
-        words = []
         for xw in range(w // 16):
             v = 0
             for bit in range(16):
                 if dmv(px[y*w + xw*16 + bit])[plane]:
                     v |= 1 << bit
-            words.append('0x%04x' % v)
-        print('        ' + ', '.join(words) + ',')
-    print('    },')
-print('};')
+            words.append(v)
+    planes.append(pack(words))
+for k, (name, data) in enumerate(zip(('tux_green', 'tux_blue'), planes)):
+    print('static const unsigned char %s[%d] = {   /* %s */' % (name, len(data),
+          'green, also red' if k == 0 else 'blue'))
+    for i in range(0, len(data), 12):
+        print('    ' + ', '.join('0x%02x' % b for b in data[i:i + 12]) + ',')
+    print('};')

@@ -56,7 +56,7 @@ static int fd, verbose, fehler, warnungen, still;
    Bildschirm geht (-n schaltet es ab). Zeilen ueber 80 Zeichen bricht die
    Konsole um; sie zaehlen doppelt. Die Ausgabe selbst bleibt unter 80. */
 #define SEITE   24
-static int zeilen, spalte, seitenweise = 1, abbruch;
+static int zeilen, spalte, seitenweise = 1, abbruch, stumm, menue;
 
 /* eine Taste ohne Echo und ohne Eingabetaste; 0 wenn nicht moeglich */
 static int taste(void)
@@ -83,19 +83,29 @@ static void seite(const char *s)
 {
     int c[1];
 
+    if (stumm)
+        return;
     for (; *s && !abbruch; s++) {
         if (*s == '\f') {      /* neue Seite: Bildschirm loeschen */
             putchar(*s);
             zeilen = spalte = 0;
             continue;
         }
-        if (seitenweise && zeilen >= SEITE) {
+        if (seitenweise && zeilen >= SEITE - menue) {
             fflush(stdout);
-            fputs("-- weiter mit Eingabetaste, q bricht ab --", stderr);
+            if (menue)          /* Hinweis in der Statuszeile, dann zurueck */
+                fputs("\033[25;1H\033[K-- weiter mit Eingabetaste, \033[1mQ\033[0m bricht ab --",
+                    stdout);
+            else
+                fputs("-- weiter mit Eingabetaste, q bricht ab --", stderr);
+            fflush(stdout);
             do                  /* ohne Echo: die Zeile wird wieder geloescht */
                 c[0] = taste();
             while (c[0] != '\n' && c[0] != '\r' && c[0] != 'q');
-            fputs("\r                                          \r", stderr);
+            if (menue)
+                fputs("\033[25;1H\033[K\033[24;1H", stdout);
+            else
+                fputs("\r                                          \r", stderr);
             if (c[0] == 'q') {
                 abbruch = 1;    /* Rest der Seite verwerfen */
                 return;
@@ -1105,7 +1115,7 @@ static void fs_pruefen(int nr, const char *dev, const char *welcher)
 static const char erklaerung[] =
 "Hilfe: was die Angaben bedeuten\n"
 "\n"
-"Platte 1/2      /dev/cfa und /dev/cfb, Einheit 0 und 1 am WD1001 (K012).\n"
+"Platte 1-3      /dev/cfa, cfb, cfc: Einheit 0-2 (HD1-HD3) am WD1001 (K012).\n"
 "DMVGEOM1        Geometrieblock der DMV-Ports auf Zylinder 0, Kopf 0,\n"
 "                Sektor-ID 1, Kopie auf ID 2. Ohne ihn gilt die Einheit fuer\n"
 "                MS-DOS 3.3 und DR DOS als nicht vorhanden. Precomp und\n"
@@ -1140,13 +1150,15 @@ static const char erklaerung[] =
 "nimmt MS-DOS 3.3 den BPB nicht), Medium F8 und in Byte 24h die Einheit\n"
 "(SDH-Bits 18h), in Byte 25h die BIOS-Laufwerksnummer.\n"
 "\n"
-"Tasten im Menue:\n"
-"  U  Uebersicht\n"
-"  V  Einzelheiten: zusaetzlich CHS, OEM, versteckte Sektoren, BPB je Teil\n"
-"  D  Dateisysteme pruefen: FAT (Kopien, Cluster, Ketten, Verzeichnisse,\n"
-"     verlorene Cluster) und CP/M-Haelften (Verzeichnis, Bloecke)\n"
-"  H  diese Hilfe\n"
-"  Q  Ende; bei \"weiter mit Eingabetaste\" bricht q nur die Seite ab\n"
+"Tasten (Statuszeile unten):\n"
+"  G      Geraete: je Platte Groesse, Geometrie, Aufteilung, Befunde\n"
+"  1 2 3  Struktur der Platte: Geometrie, Bootsatz, Tabelle, je Teil CHS,\n"
+"         OEM, versteckte Sektoren und BPB, Befunde unter ihrer Zeile\n"
+"  D      Dateisysteme der gewaehlten Platte pruefen: FAT (Kopien, Cluster,\n"
+"         Ketten, Verzeichnisse, verlorene Cluster), CP/M (Verzeichnis,\n"
+"         Bloecke)\n"
+"  H      diese Hilfe\n"
+"  Q      Ende; bei \"weiter mit Eingabetaste\" bricht Q nur die Seite ab\n"
 "Ohne Menue: dmvhd -n [-v] [-e], dmvfs [-v] [Platte [Nr]]; dmvfs cfb 5\n"
 "prueft nur Nr 5 auf Platte 2, dmvfs -v zeigt dazu die Dateien.\n"
 "Alles wird nur gelesen; dmvhd und dmvfs schreiben nie auf die Platte.\n";
@@ -1162,22 +1174,24 @@ static const char *geraet(const char *s)
     return b;
 }
 
-static const char *devs[2] = { "/dev/cfa", "/dev/cfb" };
+static const char *devs[3] = { "/dev/cfa", "/dev/cfb", "/dev/cfc" };
 static int ndev;
 
-/* eine Seite: u Uebersicht, v mit Einzelheiten, d Dateisysteme, h Hilfe */
+/* Platte 1-3 nach dem Geraet; Abbilddateien zaehlen der Reihe nach */
+static int pnr(int i)
+{
+    const char *d = devs[i];
+
+    return !strcmp(d, "/dev/cfa") ? 1 : !strcmp(d, "/dev/cfb") ? 2 :
+        !strcmp(d, "/dev/cfc") ? 3 : i + 1;
+}
+
+/* einmal ausgeben (-n, dmvfs, Umleitung): u Uebersicht, v Einzelheiten,
+   d Dateisysteme */
 static void ausgabe(int art, const char *nr)
 {
     int i;
 
-    abbruch = 0;
-    fehler = warnungen = 0;
-    if (seitenweise)
-        printf("\f");
-    if (art == 'h') {
-        seite(erklaerung);      /* laenger als der Puffer von out() */
-        return;
-    }
     if (art != 'd')
         verbose = art == 'v';   /* bei d: -v zeigt die Dateien */
     if (art == 'd')
@@ -1185,22 +1199,97 @@ static void ausgabe(int art, const char *nr)
     else
         printf("dmvhd - Plattendiagnose NCR DMV, nur lesend\n");
     for (i = 0; i < ndev && !abbruch; i++) {
-        /* Platte 1/2 nach dem Geraet; Abbilddateien zaehlen der Reihe nach */
-        int pnr = !strcmp(devs[i], "/dev/cfb") ? 2 : !strcmp(devs[i], "/dev/cfa") ? 1 : i + 1;
         if (art == 'd')
-            fs_pruefen(pnr, devs[i], nr);
+            fs_pruefen(pnr(i), devs[i], nr);
         else {
             printf("\n");
-            uebersicht(pnr, devs[i]);
+            uebersicht(pnr(i), devs[i]);
         }
     }
     printf("\n%d Fehler, %d %s\n", fehler, warnungen, pl(warnungen, "Warnung", "Warnungen"));
 }
 
+/* ------------------------------------------------------- Menue -- */
+/* Am Bildschirm: Zeilen 1-24 rollen, Zeile 25 ist die Statuszeile mit
+   den Tasten (ESC [ 1 ; 24 r der DMV-Konsole); Tastenbuchstaben
+   hervorgehoben (ESC [ 1 m: gelb, auf Mono invers). */
+#define HELL    "\033[1m"
+#define NORMAL  "\033[0m"
+
+/* Statuszeile; was in {} steht, wird hervorgehoben (die Tasten) */
+static void status(const char *t)
+{
+    fflush(stdout);
+    fputs("\033[25;1H\033[K", stdout);
+    for (; *t; t++)
+        if (*t == '{')
+            fputs(HELL, stdout);
+        else if (*t == '}')
+            fputs(NORMAL, stdout);
+        else
+            putchar(*t);
+    fflush(stdout);
+}
+
+/* Zusammenfassung einer Platte fuer die Geraeteseite */
+static void kurz(int i)
+{
+    int k, n = 0;
+    char auf[40], groesse[12], geo[14], bef[16];
+
+    if (platte_lesen(devs[i], pnr(i) - 1) < 0) {
+        printf("  %-6d %-9s nicht vorhanden\n", pnr(i), devs[i]);
+        return;
+    }
+    close(fd);
+    fehler = warnungen = 0;
+    stumm = 1;                  /* nur zaehlen */
+    uebersicht(pnr(i), devs[i]);
+    stumm = 0;
+    if (geo_ok) {
+        sprintf(groesse, "%lu KB", disksects / 2);
+        sprintf(geo, "%u/%u/%u", cyls, heads, spt);
+    } else {
+        strcpy(groesse, "-");
+        strcpy(geo, "4/17?");
+    }
+    auf[0] = 0;
+    if (original)
+        strcpy(auf, "Original: ");
+    for (k = 0; k < nteile && strlen(auf) < 26; k++) {
+        struct teil *t = &teile[k];
+        if (t->art == ART_ERW)
+            continue;
+        sprintf(auf + strlen(auf), "%s%s%s%s", n++ ? ", " : "",
+            t->nr[0] == '-' ? "" : t->nr, t->nr[0] == '-' ? "" : " ",
+            t->art == ART_FAT ? (t->typ == 0x01 ? "FAT12" : "FAT16") :
+            t->art == ART_CPM ? "CP/M" : "?");
+    }
+    if (!n)
+        strcat(auf, original ? "nicht erkannt" : "keine Partition");
+    if (!fehler && !warnungen)
+        strcpy(bef, "keine");
+    else
+        sprintf(bef, "%dF %dW", fehler, warnungen);
+    printf("  %-6d %-9s %9s  %-11s %-28.28s %s\n", pnr(i), devs[i], groesse, geo, auf, bef);
+}
+
+static void geraete(void)
+{
+    int i;
+
+    printf("dmvhd - Plattendiagnose NCR DMV, nur lesend\n\n");
+    printf("  %-6s %-9s %9s  %-11s %-28s %s\n", "Platte", "Geraet", "Groesse",
+        "Zyl/Kpf/Sek", "Aufteilung (Nr Inhalt)", "Befunde");
+    for (i = 0; i < ndev; i++)
+        kurz(i);
+    printf("\nZyl/Kpf/Sek aus dem DMVGEOM1-Block; Befunde: F Fehler, W Warnungen.\n");
+}
+
 int main(int argc, char **argv)
 {
-    static char dv[2][64];
-    int i, n = 0, fs = 0, nur = 0, art, k;
+    static char dv[3][64];
+    int i, n = 0, fs = 0, nur = 0, art, k, wahl = 0;
     const char *p = strrchr(argv[0], '/'), *nr = 0;
 
     if (!strcmp(p ? p + 1 : argv[0], "dmvfs"))
@@ -1221,7 +1310,7 @@ int main(int argc, char **argv)
             return 2;
         } else if (fs && n == 1 && !nr && strlen(argv[i]) <= 2)
             nr = argv[i];       /* Nr aus der Tabelle: 1-4, 5.., -, A, B */
-        else if (n < 2) {
+        else if (n < 3) {
             strncpy(dv[n], geraet(argv[i]), sizeof(dv[n]) - 1);
             dv[n][sizeof(dv[n]) - 1] = 0;
             devs[n] = dv[n];
@@ -1230,10 +1319,16 @@ int main(int argc, char **argv)
     }
     if (!isatty(1) || !isatty(0))
         seitenweise = 0;
-    if (!n)
-        n = 2;
-    ndev = n;
+    ndev = n ? n : 3;
     if (!seitenweise || nur || fs || nr) {      /* einmal ausgeben */
+        if (!n) {               /* Vorgabe: nur die vorhandenen Platten */
+            for (i = k = 0; i < 3; i++)
+                if ((fd = open(devs[i], O_RDONLY)) >= 0) {
+                    close(fd);
+                    devs[k++] = devs[i];
+                }
+            ndev = k;
+        }
         if (nur)
             seite(erklaerung);
         else
@@ -1241,18 +1336,61 @@ int main(int argc, char **argv)
         fflush(stdout);
         return fehler ? 1 : 0;
     }
-    art = 'u';
+
+    /* Menue: g Geraete, 1-3 Struktur, d Dateisysteme, h Hilfe, q Ende */
+    menue = 1;
+    printf("\033[1;24r");
+    art = 'g';
     for (;;) {
-        ausgabe(art, 0);
-        fflush(stdout);
-        fputs("U Uebersicht  V Einzelheiten  D Dateisysteme  H Hilfe  Q Ende ", stderr);
+        abbruch = 0;
+        fehler = warnungen = 0;
+        printf("\f");
+        if (art == 'g')
+            geraete();
+        else if (art == 'h')
+            seite(erklaerung);
+        else {
+            for (i = 0; i < ndev && pnr(i) != wahl; i++)
+                ;
+            if (i == ndev)
+                printf("Platte %d gibt es nicht.\n", wahl);
+            else if (art == 'd') {
+                verbose = 0;
+                printf("Platte %d: Dateisysteme pruefen\n", wahl);
+                fs_pruefen(wahl, devs[i], 0);
+                printf("\n%d Fehler, %d %s\n", fehler, warnungen,
+                    pl(warnungen, "Warnung", "Warnungen"));
+            } else {
+                verbose = 1;
+                printf("Platte %d: Struktur\n\n", wahl);
+                uebersicht(wahl, devs[i]);
+                printf("\n%d Fehler, %d %s\n", fehler, warnungen,
+                    pl(warnungen, "Warnung", "Warnungen"));
+            }
+        }
+        if (!wahl)
+            status("{1} {2} {3} Struktur der Platte   {H} Hilfe   {Q} Ende");
+        else {
+            char z[80];
+            sprintf(z, "{G} Geraete   {D} Dateisysteme Platte %d   {1} {2} {3} Struktur   "
+                "{H} Hilfe   {Q} Ende", wahl);
+            status(z);
+        }
         do
             k = taste();
-        while (!strchr("uvdhq", k));
+        while (!strchr(wahl ? "gdh123q" : "h123q", k) || !k);
         if (k == 'q')
             break;
-        art = k;
+        if (k >= '1' && k <= '3') {
+            wahl = k - '0';
+            art = 's';
+        } else {
+            if (k == 'g')
+                wahl = 0;
+            art = k;
+        }
     }
-    printf("\n");
+    printf("\033[r\f");
+    fflush(stdout);
     return 0;
 }

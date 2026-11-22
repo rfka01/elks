@@ -24,7 +24,7 @@
  *   ID 1 (copy on ID 2); the DOS ports treat a unit without a valid block
  *   as absent. Here such a unit is still read, as 4 heads/17 sectors, so
  *   dmvhd can look at disks in NCR's original MS-DOS 2.11 format.
- *   Units 0-2 are HD1-HD3; ELKS's ata-cf handles two.
+ *   Units 0-2 are HD1-HD3 (cfa, cfb, cfc; ata-cf takes three for the DMV).
  *   Before handing the machine back to the Z80 unit 0 must be selected
  *   (reset-dmv.c does), so every access here ends with unit 0 selected.
  *
@@ -68,7 +68,7 @@ static char present;                /* controller found */
 static struct {
     unsigned int cyls;
     unsigned char heads, spt;
-} geo[2];
+} geo[3];
 
 static unsigned char sdh(unsigned int unit, unsigned int head)
 {
@@ -182,7 +182,7 @@ int ATPROC ata_init(int drive, struct drive_infot *drivep)
 
     drivep->cylinders = 0;
     geo[drive].cyls = 0;
-    if (!present || drive > 1)
+    if (!present || drive > 2)
         return 0;
     if (!unit_ready(drive)) {
         unit0();
@@ -244,7 +244,7 @@ int ATPROC ata_read(unsigned int drive, sector_t sector, char *buf, ramdesc_t se
 {
     unsigned int track, head, sect, cyl;
 
-    if (drive > 1 || !geo[drive].cyls)
+    if (drive > 2 || !geo[drive].cyls)
         return -ENODEV;
     sect = (unsigned int)(sector % geo[drive].spt);
     track = (unsigned int)(sector / geo[drive].spt);
