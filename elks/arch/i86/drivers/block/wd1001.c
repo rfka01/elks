@@ -215,9 +215,9 @@ int ATPROC ata_init(int drive, struct drive_infot *drivep)
             drivep->sectors = geo[drive].spt;
             drivep->sector_size = DMV_SECTOR_SIZE;
             drivep->fdtype = HARDDISK;
+            /* one line, so the boot logo stays; the rest shows dmvhd */
             show_drive_info(drivep, "cf", drive, 1, " ");
-            printk("WD1001 unit %d, DMVGEOM1 precomp %u, step %u, interleave %u\n",
-                drive, b[14] | (b[15] << 8), b[18], b[19]);
+            printk("WD1001 unit %d\n", drive);
         }
     } else if (read_chs(drive, 0, 0, 0, (unsigned char __far *)b) == 0) {
         /* no DMVGEOM1: maybe a disk in NCR's original MS-DOS 2.11 format
@@ -232,7 +232,7 @@ int ATPROC ata_init(int drive, struct drive_infot *drivep)
         drivep->sectors = 17;
         drivep->sector_size = DMV_SECTOR_SIZE;
         drivep->fdtype = HARDDISK;
-        printk("cf%c: WD1001 unit %d without DMVGEOM1, read as 4 heads/17 sectors\n",
+        printk("cf%c: WD1001 unit %d, no DMVGEOM1, read as 4 heads/17 sect\n",
             'a' + drive, drive);
     } else
         printk("cf%c: unit %d ready, but no valid DMVGEOM1 block\n", 'a' + drive, drive);

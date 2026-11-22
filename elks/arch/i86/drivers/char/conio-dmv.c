@@ -240,6 +240,13 @@ void conio_putc(byte_t c)
         if (col)
             col--;
         break;
+    case '\f':                      /* form feed: clear the screen */
+        tux_rows = 0;
+        top = 0;
+        row = col = 0;
+        gdc_fill(0, RING, ' ');
+        gdc_partitions();
+        break;
     case '\t':
         do {
             conio_putc(' ');

@@ -10,6 +10,7 @@
  * put into RAM (SETUP_MEM_KBYTES).
  */
 
+#include <arch/dmvver.h>
 #include <linuxmt/config.h>
 #include <linuxmt/types.h>
 #include <linuxmt/kernel.h>
@@ -51,5 +52,5 @@ unsigned int INITPROC setup_arch(void)
 
 void INITPROC kernel_banner_arch(void)
 {
-    printk("NCR Decision Mate V, ");
+    printk("NCR Decision Mate V " DMV_VERSION ", ");
 }

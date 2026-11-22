@@ -181,6 +181,7 @@ disk_utils/partype              :diskutil               :1200k
 disk_utils/ramdisk              :diskutil       :360c   :1200k
 disk_utils/fdisk                :be-diskutil    :360k
 disk_utils/dmvhd                :diskutil       :360k   # NCR DMV disk diagnosis
+disk_utils/dmvhd :::dmvfs        :diskutil       :360k   # NCR DMV file system check
 fsck_dos/fsck-dos               :diskutil               :1200k
 tui/fm                          :tui                    :1200k
 tui/matrix                      :tui            :360c   :1200k

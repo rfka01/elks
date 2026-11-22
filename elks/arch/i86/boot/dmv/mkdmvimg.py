@@ -6,7 +6,8 @@
   then         image/romfs.bin      -> ROMFS_BASE:0000
 
 The sector counts are patched in after the "SECC" and "INIT" markers.
-Usage: mkdmvimg.py bootdmv.bin Image romfs.bin out.img
+Usage: mkdmvimg.py bootdmv.bin Image romfs.bin out.img|directory
+(a directory gets ELKSDMV_<version>.IMG, version from include/arch/dmvver.h)
 """
 import sys
 
@@ -22,6 +23,15 @@ def patch(boot, marker, value):
     boot[at + 4:at + 6] = value.to_bytes(2, 'little')
 
 boot, image, romfs, out = sys.argv[1:5]
+
+# A directory as output: the image gets the version from dmvver.h,
+# ELKSDMV_<version>.IMG, the same version the boot screen shows.
+import os, re
+here = os.path.dirname(os.path.abspath(__file__))
+ver = re.search(r'#define DMV_VERSION "([^"]+)"',
+                open(os.path.join(here, '../../../../include/arch/dmvver.h')).read()).group(1)
+if os.path.isdir(out):
+    out = os.path.join(out, 'ELKSDMV_%s.IMG' % ver)
 
 # The ROMFS lies below the kernel image; check it does not run into it
 # (CONFIG_ROMFS_BASE and CONFIG_ROM_BASE from .config, if at hand).
@@ -43,4 +53,5 @@ patch(boot, b'SECC', ks)
 patch(boot, b'INIT', rs)
 img = pad(bytes(boot) + pad(k, ks * 512) + pad(r, rs * 512), 368640)
 open(out, 'wb').write(img)
-print('mkdmvimg: kernel %d, romfs %d sectors, %d of 720 used' % (ks, rs, 1 + ks + rs))
+print('mkdmvimg: %s %s: kernel %d, romfs %d sectors, %d of 720 used'
+      % (out, ver, ks, rs, 1 + ks + rs))
