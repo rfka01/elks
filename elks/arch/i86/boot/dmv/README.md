@@ -39,8 +39,9 @@ starts ELKS from MS-DOS or DR DOS (files ELKS.IMG and ROMFS.BIN next to it).
 
 - There is no PC BIOS. ELKS is built as a ROM kernel (CONFIG_ROMCODE); the
   boot sector (`bootdmv.s`, from rfka01/gentleos) or `elksdmv.asm` puts the
-  kernel image at CONFIG_ROM_BASE (7000:0) and the ROMFS at
-  CONFIG_ROMFS_BASE (3E00:0), then enters setup like an option ROM.
+  kernel image at CONFIG_ROM_BASE (6E00:0) and the ROMFS at
+  CONFIG_ROMFS_BASE (3800:0), then enters setup like an option ROM.
+  Programs get the memory below the ROMFS (224 KB with 512 KB).
 - Linear 0F000h-0FFFFh stays free for the firmware (`system-dmv.c`):
   near heap ends below it, application memory starts at 64 KB.
 - Console: `conio-dmv.c`, direct uPD7220 text output (ring of two
@@ -54,7 +55,10 @@ starts ELKS from MS-DOS or DR DOS (files ELKS.IMG and ROMFS.BIN next to it).
   text ring. Colour board: white, yellow, black; mono board: the green
   plane. `tux-dmv.h` is made by `mktux-dmv.py` from the Linux kernel's
   80x80 logo. Tux is by Larry Ewing <lewing@isc.tamu.edu> and The GIMP.
-- The kernel image must stay within 64 KB (7000:0 up to the end of 512 KB).
+- The kernel image may take 72 KB (6E00:0 up to the end of 512 KB,
+  CONFIG_ROM_CHECKSUM_SIZE), the code itself at most 64 KB; the ROMFS
+  216 KB (3800:0 up to the kernel). mkdmvimg.py checks the ROMFS. The
+  bases are in dmv.config and as defaults in bootdmv.s and elksdmv.asm.
 - The boot sector steps twice per track if a read fails, so the 40-track
   floppy also boots in an 80-track (QD) drive.
 - Timer: 8253 channel 2 (500 kHz) on IR0 of the K235's 8259. On the K230

@@ -42,10 +42,10 @@ HEADS           equ 2
 
 ; Destination segments: CONFIG_ROM_BASE and CONFIG_ROMFS_BASE of dmv.config
 %ifndef ROM_BASE
-%define ROM_BASE   0x7000
+%define ROM_BASE   0x6E00
 %endif
 %ifndef ROMFS_BASE
-%define ROMFS_BASE 0x3E00
+%define ROMFS_BASE 0x3800
 %endif
 KERNEL_SEG      equ ROM_BASE
 KERNEL_OFS      equ 0x0000

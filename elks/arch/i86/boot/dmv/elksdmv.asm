@@ -21,10 +21,10 @@
 ;=====================================================================
 cpu 8086
 %ifndef ROM_BASE
-%define ROM_BASE   0x7000
+%define ROM_BASE   0x6E00
 %endif
 %ifndef ROMFS_BASE
-%define ROMFS_BASE 0x3E00
+%define ROMFS_BASE 0x3800
 %endif
 
         org     100h
