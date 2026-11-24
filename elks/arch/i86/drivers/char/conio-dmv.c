@@ -97,6 +97,27 @@ static unsigned char statl;         /* 1: row 25 is a status line */
 static unsigned short sline[COLS];  /* its copy, char | attr << 8 */
 static unsigned char esc, np;       /* escape state: 1 ESC, 2 ESC [ */
 static unsigned char par[2];
+static unsigned char utf8;          /* 1: C3h seen, second byte of a UTF-8 umlaut due */
+
+/*
+ * Umlauts: texts are UTF-8, the character generator (76161) has the German
+ * letters at its own codes (dmv_os docs/DMV-Zielhardware.md, section 1):
+ * ae 90h, oe 96h, ue 99h, Ae 80h, Oe 86h, Ue 89h, sz 9Eh. Only the C3h row
+ * of UTF-8 is mapped; anything else there shows as '?'.
+ */
+static byte_t umlaut(byte_t c)
+{
+    switch (c) {
+    case 0x84: return 0x80;         /* Ae */
+    case 0x96: return 0x86;         /* Oe */
+    case 0x9C: return 0x89;         /* Ue */
+    case 0xA4: return 0x90;         /* ae */
+    case 0xB6: return 0x96;         /* oe */
+    case 0xBC: return 0x99;         /* ue */
+    case 0x9F: return 0x9E;         /* sz */
+    }
+    return '?';
+}
 
 static void gdc_cmd(unsigned char c)
 {
@@ -387,7 +408,14 @@ void conio_putc(byte_t c)
         } while (col & 7);
         return;
     default:
-        if (c < ' ')
+        if (c == 0xC3) {            /* UTF-8: Umlaut folgt */
+            utf8 = 1;
+            return;
+        }
+        if (utf8) {
+            utf8 = 0;
+            c = umlaut(c);
+        } else if (c < ' ')
             return;
         gdc_at(cell(row, col));
         gdc_cmd(GDC_WDAT);

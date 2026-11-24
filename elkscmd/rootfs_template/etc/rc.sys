@@ -31,5 +31,10 @@ fi
 #uname -snrm
 
 date
+
+# NCR DMV: Hardwareuebersicht statt der Startmeldungen (dmvhd gibt es nur dort)
+if test -f /bin/dmvhd; then
+	dmvhd -s
+fi
 # display internal commands used
 #hash

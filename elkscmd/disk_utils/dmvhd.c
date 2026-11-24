@@ -18,14 +18,23 @@
  * gehalten (16-Bit-Datensegment), sondern sektorweise gelesen; fuer die
  * Kettenpruefung reichen zwei Bitfelder.
  *
- * Am Bildschirm laeuft dmvhd als Menue: zuerst die Uebersicht, dann
- *   U Uebersicht, V Einzelheiten, D Dateisysteme pruefen, H Hilfe, Q Ende.
- *   Jede Seite beginnt mit einem Seitenvorschub (die DMV-Konsole loescht
- *   dabei den Bildschirm).
+ * Am Bildschirm laeuft dmvhd als Menue (24 Zeilen, Zeile 25 Statuszeile):
+ *   Geraeteseite, 1 2 3 Struktur einer Platte, D Dateisysteme, L Schritt-
+ *   test der Diskettenlaufwerke, H Hilfe, Q Ende. Jede Seite beginnt mit
+ *   einem Seitenvorschub (die DMV-Konsole loescht dabei den Bildschirm).
  * Einmal ausgeben und enden (auch wenn die Ausgabe umgeleitet ist):
- *         dmvhd -n [-v] [-e] [Platte ...]  Vorgabe /dev/cfa /dev/cfb
+ *         dmvhd -n [-v] [-e] [Platte ...]  Vorgabe /dev/cfa /dev/cfb /dev/cfc
  *         dmvfs [-v] [-n] [Platte [Nr]]    Nr wie in der Tabelle von dmvhd
+ *         dmvhd -s                         Startbildschirm (aus /etc/rc.sys)
  *   -n ohne Menue und ohne Halt nach jeder Bildschirmseite
+ *
+ * Texte sind UTF-8; die DMV-Konsole setzt die Umlaute in die Codes des
+ * Zeichengenerators um. Spalten werden nach Zeichen gezaehlt, nicht nach
+ * Byte (utf_len).
+ *
+ * CP/M auf Partitionen (Festlegung 24.11.2026, dmv_os docs/DMV-
+ * Bootmanager.md Stufe 3): 2Eh RomWBW-Behaelter mit Scheiben zu 8 MB
+ * (hd1k), DBh nach DRs PC-Muster mit Kopfblock.
  *
  * Grundlagen: rfka01/dmv_os docs/DMV-Datentraeger.md (DMVGEOM1, OEM-
  * Kennungen, Originalformat), docs/DMV-Schnittstellen.md (Abschnitt 4,
@@ -41,6 +50,14 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <termios.h>
+#ifdef __ia16__
+#include <arch/io.h>
+#include <arch/dmvver.h>
+#else                           /* Pruefung auf dem PC mit Abbilddateien */
+#define inb(p)      0xFF
+#define outb(v, p)  ((void)(v))
+#define DMV_VERSION "v000"
+#endif
 
 #define SECT    512
 
@@ -113,6 +130,8 @@ static void seite(const char *s)
             zeilen = 0;
         }
         putchar(*s);
+        if ((*s & 0xC0) == 0x80)    /* UTF-8-Folgebyte: keine neue Spalte */
+            continue;
         if (*s == '\n' || ++spalte >= 80) {
             if (*s != '\n')
                 fflush(stdout);
@@ -242,6 +261,7 @@ struct teil {
     uchar ok;
     ulong dir0;                 /* erster Sektor des Verzeichnisses */
     unsigned int dsm, drm, spb; /* hoechster Block, Eintrag, Sektoren/Block */
+    unsigned int off;           /* OFF aus dem Kopfblock (Spuren) */
 };
 
 /* RomWBW hd1k: Scheibe 8 MB = 16384 Sektoren, davon 32 Startsektoren,
@@ -272,19 +292,6 @@ static void halbe(struct teil *t)
     map_fh = t->halb ? 2 * (t->halb - 1) : 0;
 }
 
-static const char *typname(int t)
-{
-    switch (t) {
-    case 0x01: return "FAT12";
-    case 0x04: return "FAT16 <32M";
-    case 0x05: return "erweitert";
-    case 0x06: return "FAT16 >32M";
-    case 0x2E: return "RomWBW";
-    case 0xDB: return "CP/M (DR)";
-    case 0x00: return "leer";
-    }
-    return "?";
-}
 
 static int fattyp(int t)
 {
@@ -312,7 +319,7 @@ static void geometrie(void)
         for (sum = 0, i = 0; i < 22; i++)
             sum += buf[i];
         if (sum != w(buf + 22)) {
-            err("DMVGEOM1 auf ID %d: Pruefsumme %04x, gespeichert %04x\n", id, sum, w(buf + 22));
+            err("DMVGEOM1 auf ID %d: Prüfsumme %04x, gespeichert %04x\n", id, sum, w(buf + 22));
             continue;
         }
         if (!ok) {
@@ -326,9 +333,9 @@ static void geometrie(void)
             geo_lw = buf[20];
             ok = id;
             if (w(buf + 12) != SECT)
-                err("Sektorgroesse %u statt 512\n", w(buf + 12));
+                err("Sektorgröße %u statt 512\n", w(buf + 12));
             if (heads == 0 || heads > 8)
-                err("%u Koepfe: die DMV kann 1 bis 8\n", heads);
+                err("%u Köpfe: die DMV kann 1 bis 8\n", heads);
             if (cyls == 0 || cyls > 1024)
                 err("%u Zylinder: erlaubt 1 bis 1024\n", cyls);
         } else if (w(buf + 8) != cyls || buf[10] != heads || buf[11] != spt)
@@ -350,12 +357,12 @@ static void geometrie(void)
 static void geo_zeilen(int nr, const char *dev)
 {
     if (!geo_ok) {
-        printf("Platte %d (%s): kein DMVGEOM1, gelesen als 4 Koepfe, 17 Sekt./Spur\n",
+        printf("Platte %d (%s): kein DMVGEOM1, gelesen mit 4 Köpfen, 17 Sektoren\n",
             nr, dev);
-        warn("ohne DMVGEOM1 fehlt die Einheit fuer die DOS-Ports\n");
+        warn("ohne DMVGEOM1 fehlt die Einheit für die DOS-Ports\n");
         return;
     }
-    printf("Platte %d (%s): %lu KB, %u Zylinder, %u Koepfe, %u Sekt./Spur\n",
+    printf("Platte %d (%s): %lu KB, %u Zylinder, %u Köpfe, %u Sektoren je Spur\n",
         nr, dev, disksects / 2, cyls, heads, spt);
     printf("  DMVGEOM1: Precomp %lu, Landezone %lu, Schritt %u, Interleave %u\n",
         geo_pre, geo_land, geo_schritt, geo_il);
@@ -410,7 +417,7 @@ static void eintrag_pruefen(struct teil *t)
     if (t->art == ART_RWBW && t->size < RW_SLICE)
         err("kleiner als eine Scheibe (8 MB = %lu Sektoren)\n", RW_SLICE);
     if (t->ss == 0 || t->es == 0)
-        err("Sektor 0 in CHS (Partitionseintraege zaehlen ab 1)\n");
+        err("Sektor 0 in CHS (Partitionseinträge zählen ab 1)\n");
     else if (geo_ok) {
         a = chs2lba(t->sc, t->sh, t->ss);
         b = chs2lba(t->ec, t->eh, t->es);
@@ -420,17 +427,17 @@ static void eintrag_pruefen(struct teil *t)
             err("Ende-CHS ergibt LBA %lu, erwartet %lu\n", b, t->start + t->size - 1);
     }
     if (t->start < 3)
-        err("beginnt vor Sektor 3 und ueberschreibt DMVGEOM1\n");
+        err("beginnt vor Sektor 3 und überschreibt DMVGEOM1\n");
     if (t->start + t->size > disksects)
-        err("reicht ueber das Plattenende (%lu Sektoren)\n", disksects);
+        err("reicht über das Plattenende (%lu Sektoren)\n", disksects);
     for (j = 0; j < nteile && &teile[j] != t; j++)
         if (teile[j].nr[0] <= '4' && t->start < teile[j].start + teile[j].size &&
             teile[j].start < t->start + t->size)
-            err("ueberlappt Eintrag %s\n", teile[j].nr);
+            err("überlappt Eintrag %s\n", teile[j].nr);
     if (t->typ == 0x04 && t->size > 65535L)
         err("Typ 04 mit mehr als 65535 Sektoren\n");
     if (t->typ == 0x06 && t->size <= 65535L)
-        warn("Typ 06, waere als 04 klein genug\n");
+        warn("Typ 06, wäre als 04 klein genug\n");
 }
 
 /* logische Laufwerke: Kette der EBRs; Eintrag 1 ist das Laufwerk (Start
@@ -469,7 +476,7 @@ static void erweitert(struct teil *x)
         if (t2 != 0x05 || !next)
             break;
         if (ext + next <= ebr || ext + next >= end) {
-            err("naechster EBR %lu ausserhalb oder rueckwaerts\n", ext + next);
+            err("nächster EBR %lu außerhalb oder rückwärts\n", ext + next);
             break;
         }
         ebr = ext + next;
@@ -578,7 +585,7 @@ static void eintraege(uchar *b, int n, const char *pfad, int tiefe, int *ende)
             if (verbose)
                 printf("    %s/\n", voll);
             if (c < 2 || c >= ncl + 2)
-                err("%s: Verzeichnis ohne gueltigen Startcluster %lu\n", voll, c);
+                err("%s: Verzeichnis ohne gültigen Startcluster %lu\n", voll, c);
             else if (BIT(seen, c))
                 err("%s: Startcluster %lu schon belegt\n", voll, c);
             else if (tiefe > 16)
@@ -591,11 +598,11 @@ static void eintraege(uchar *b, int n, const char *pfad, int tiefe, int *ende)
                 printf("    %s %lu\n", voll, groesse);
             if (groesse == 0) {
                 if (c)
-                    warn("%s: Laenge 0, aber Startcluster %lu\n", voll, c);
+                    warn("%s: Länge 0, aber Startcluster %lu\n", voll, c);
                 continue;
             }
             if (c < 2 || c >= ncl + 2) {
-                err("%s: ungueltiger Startcluster %lu\n", voll, c);
+                err("%s: ungültiger Startcluster %lu\n", voll, c);
                 continue;
             }
             len = kette(c, voll);
@@ -624,7 +631,7 @@ static void verzeichnis(ulong first, int root, const char *pfad, int tiefe)
     }
     for (c = first; c >= 2 && c < ncl + 2 && !ende; ) {
         if (BIT(seen, c)) {
-            err("%s: Verzeichniskette laeuft in belegten Cluster %lu\n", pfad, c);
+            err("%s: Verzeichniskette läuft in belegten Cluster %lu\n", pfad, c);
             return;
         }
         SETB(seen, c);
@@ -665,7 +672,7 @@ static void fatpruefung(int nr)
     seen = calloc(1, (unsigned int)((ncl + 2 + 7) / 8));
     refd = calloc(1, (unsigned int)((ncl + 2 + 7) / 8));
     if (!seen || !refd) {
-        err("zu wenig Speicher fuer %lu Cluster\n", ncl);
+        err("zu wenig Speicher für %lu Cluster\n", ncl);
         free(seen);
         free(refd);
         return;
@@ -681,7 +688,7 @@ static void fatpruefung(int nr)
             if (!is_eoc(v)) {
                 if (v < 2 || v >= ncl + 2) {
                     if (aussen < 5)
-                        err("Cluster %lu zeigt nach %lx, ausserhalb\n", n, v);
+                        err("Cluster %lu zeigt nach %lx, außerhalb\n", n, v);
                     aussen++;
                 } else {
                     if (BIT(refd, v)) {
@@ -781,7 +788,7 @@ static void cpm_pruefen(ulong dir0, unsigned int spb, unsigned int dsm, unsigned
     }
     map = calloc(dsm / 8 + 1, 1);
     if (!map) {
-        err("zu wenig Speicher fuer %u Bloecke\n", dsm + 1);
+        err("zu wenig Speicher für %u Blöcke\n", dsm + 1);
         return;
     }
     dirblk = (dirsec + spb - 1) / spb;
@@ -813,7 +820,7 @@ static void cpm_pruefen(ulong dir0, unsigned int spb, unsigned int dsm, unsigned
                     continue;
                 if (blk > dsm) {
                     if (aussen++ < 5)
-                        err("CP/M-Datei %.8s.%.3s: Block %u ueber DSM %u\n",
+                        err("CP/M-Datei %.8s.%.3s: Block %u über DSM %u\n",
                             d + 1, d + 9, blk, dsm);
                     continue;
                 }
@@ -833,16 +840,16 @@ static void cpm_pruefen(ulong dir0, unsigned int spb, unsigned int dsm, unsigned
     if (lab[0])
         printf("  Name \"%s\"\n", lab);
     if (!eintraege)
-        printf("  keine Dateien (%u Verzeichniseintraege frei)\n", drm + 1);
+        printf("  keine Dateien (%u Verzeichniseinträge frei)\n", drm + 1);
     else {
-        printf("  %lu von %u Verzeichniseintraegen, %lu %s, User", eintraege, drm + 1,
+        printf("  %lu von %u Verzeichniseinträgen, %lu %s, User", eintraege, drm + 1,
             dateien, pl(dateien, "Datei", "Dateien"));
         for (k = 0; k < 16; k++)
             if (users & (1 << k))
                 printf(" %u", k);
         printf("\n");
     }
-    printf("  %lu Bloecke zu %u KB belegt (mit Verzeichnis), %lu KB frei\n",
+    printf("  %lu Blöcke zu %u KB belegt (mit Verzeichnis), %lu KB frei\n",
         bloecke, spb / 2, (ulong)(dsm + 1 - bloecke) * (spb / 2));
 }
 
@@ -880,24 +887,22 @@ static void dr_kopf(struct teil *t, int befunde)
     t->dsm = w(k + 0x2E);
     t->drm = w(k + 0x30);
     t->spb = bls / SECT;
-    t->dir0 = (ulong)w(k + 0x36) * spur;
+    t->off = w(k + 0x36);
+    t->dir0 = (ulong)t->off * spur;
     t->ok = t->spb && t->dsm && (128U << k[0x2B]) == bls;
     if (!befunde)
         return;
     if (!t->ok)
-        err("DR-Kopfblock: Blockgroesse %u passt nicht zu BSH %u\n", bls, k[0x2B]);
+        err("DR-Kopfblock: Blockgröße %u passt nicht zu BSH %u\n", bls, k[0x2B]);
     if (w(k + 0x21) != c0)
         err("DR-Kopfblock nennt Zylinder %u, Partition beginnt auf %u\n", w(k + 0x21), c0);
     if (k[0x25] != heads || k[0x26] != spt)
-        err("DR-Kopfblock: %u Koepfe/%u Sektoren, DMVGEOM1 %u/%u\n",
+        err("DR-Kopfblock: %u Köpfe/%u Sektoren, DMVGEOM1 %u/%u\n",
             k[0x25], k[0x26], heads, spt);
     if (t->dir0 < l + 1 || t->dir0 >= t->start + t->size)
-        err("Verzeichnis (OFF %u Spuren) ausserhalb der Partition\n", w(k + 0x36));
+        err("Verzeichnis (OFF %u Spuren) außerhalb der Partition\n", w(k + 0x36));
     else if (t->dir0 + (ulong)(t->dsm + 1) * t->spb > t->start + t->size)
-        err("DSM %u: Bloecke reichen ueber das Partitionsende\n", t->dsm);
-    if (verbose)
-        printf("      DR-Kopfblock: Zyl. %u-%u, OFF %u, Bloecke %u KB, DSM %u, DRM %u\n",
-            c0, c0 + w(k + 0x23) - 1, w(k + 0x36), bls / 1024, t->dsm, t->drm);
+        err("DSM %u: Blöcke reichen über das Partitionsende\n", t->dsm);
 }
 
 /* 2Eh: Zahl der ganzen Scheiben, Rest in Sektoren */
@@ -988,7 +993,7 @@ static void fat_befunde(struct teil *t)
     if (t->typ != 0x01 && !fat16)
         warn("Typ %02x, aber nur %lu Cluster: FAT12\n", t->typ, ncl);
     if ((ulong)fatsz * SECT < (fat16 ? (ncl + 2) * 2 : (ncl + 2) * 3 / 2))
-        err("FAT zu klein fuer %lu Cluster\n", ncl);
+        err("FAT zu klein für %lu Cluster\n", ncl);
     fatbufsec = 0xFFFFFFFFL;
     if (rd(fatlba, fatbuf) == 0) {
         fatbufsec = fatlba;
@@ -1009,7 +1014,7 @@ static void fat_einzeln(struct teil *t)
     printf(", Daten ab %lu\n", datalba);
     printf("      BPB: %u Byte/Sektor, %u Sekt./Cluster, %lu reserviert, %u FAT%s zu %u\n",
         bps, spc, reserved, nfat, nfat == 1 ? "" : "s", fatsz);
-    printf("           %u Wurzeleintraege, %lu Sektoren, Medium %02x, %u/%u Sekt./Koepfe\n",
+    printf("           %u Wurzeleinträge, %lu Sektoren, Medium %02x, %u/%u Sekt./Köpfe\n",
         rootents, totsec, bs[21], w(bs + 24), w(bs + 26));
 }
 
@@ -1072,12 +1077,89 @@ static int platte_lesen(const char *dev, int einheit)
     return 0;
 }
 
+/* --------------------------------------------------------- Kuerzel -- */
+/* Kuerzel eines Teils fuer Geraete- und Strukturseite (5 Zeichen), wie in
+   der Hilfe erklaert */
+static void kuerzel(struct teil *t, char *k)
+{
+    switch (t->art) {
+    case ART_FAT:
+        if (t->halb)
+            strcpy(k, "DOS05");
+        else if (original)
+            strcpy(k, t->size <= 24000L ? "DOS10" : "DOS20");
+        else
+            strcpy(k, t->typ == 0x01 ? "FAT12" : t->typ == 0x06 ? "FAT2G" : "FAT16");
+        break;
+    case ART_CPM:
+        strcpy(k, "CPM05");
+        break;
+    case ART_ERW:
+        strcpy(k, "EXTND");
+        break;
+    case ART_RWBW:
+        sprintf(k, "RWBW%u", scheiben(t));
+        break;
+    case ART_DRCPM:
+        sprintf(k, "CPM%02lu", (t->size + 1024) / 2048);
+        break;
+    case ART_LEER:
+        strcpy(k, "-----");
+        break;
+    default:
+        if (t->halb)
+            strcpy(k, "?????");
+        else
+            sprintf(k, "?%02X", t->typ);
+    }
+}
+
+/* Zylinder/Kopf/Sektor eines Sektors im Teil (rel ab Teilanfang) */
+static void chs_text(struct teil *t, ulong rel, char *z)
+{
+    ulong c, h, sk;
+
+    if (t->halb) {              /* Haelfte: 2 Koepfe ab Kopf 0 bzw. 2 */
+        c = rel / 34;
+        h = (rel / 17) % 2 + 2 * (t->halb - 1);
+        sk = rel % 17 + 1;
+    } else {
+        rel += t->start;
+        c = rel / ((ulong)heads * spt);
+        h = (rel / spt) % heads;
+        sk = rel % spt + 1;
+    }
+    sprintf(z, "%lu/%lu/%lu", c, h, sk);
+}
+
+/* belegte Zylinder einer Platte im Originalformat (ohne DMVGEOM1):
+   CONFIG schreibt die Plattengroesse nirgends hin, erschlossen wird
+   nur der belegte Teil aus den Groessen der Teile */
+static unsigned int e_cyls;
+
+static void erschliessen(void)
+{
+    int i;
+    ulong c;
+
+    e_cyls = 0;
+    for (i = 0; i < nteile; i++) {
+        c = teile[i].halb ? (teile[i].size + 33) / 34 : (teile[i].size + 67) / 68;
+        if (c > e_cyls)
+            e_cyls = (unsigned int)c;
+    }
+}
+
 static int teile_suchen(void)
 {
     int i, r = mbr(), n;
 
-    if (r == 1)
-        return originalformat() + 10;   /* 11 eine Partition, 12 2 x 5 MB */
+    e_cyls = 0;
+    if (r == 1) {
+        r = originalformat() + 10;      /* 11 eine Partition, 12 2 x 5 MB */
+        erschliessen();
+        return r;
+    }
     n = nteile;
     for (i = 0; i < n; i++)
         if (teile[i].art == ART_ERW)
@@ -1085,21 +1167,29 @@ static int teile_suchen(void)
     return r;
 }
 
+/* ------------------------------------------------- Strukturseite -- */
+/* Spalten: Nr, startbar, Typ und Kuerzel, Anfang und Ende als Z/K/S,
+   Groesse in KB, Inhalt; darunter LBA und Bootsektor-Angaben (Weg a) */
+static const char kopf_struktur[] =
+"Nr  B  Typ         Anfang Z/K/S    Ende Z/K/S  Größe KB  Inhalt\n"
+"==============================================================================\n";
+
 static void zeile(struct teil *t)
 {
-    char z[40], typ[20];
+    char z[40], typ[16], k[8], anf[16], end[16];
 
-    if (t->halb)
-        sprintf(typ, "   Kopf %d-%d  ", 2 * t->halb - 2, 2 * t->halb - 1);
+    kuerzel(t, k);
+    if (t->halb || original)
+        sprintf(typ, "-- %s", k);
     else
-        sprintf(typ, "%02x %-10s", t->typ, typname(t->typ));
+        sprintf(typ, "%02X %s", t->typ, k);
     z[0] = 0;
     switch (t->art) {
     case ART_FAT:
         fat_inhalt(t, z);
         break;
     case ART_CPM:
-        strcpy(z, "CP/M, Bloecke 8 KB");
+        strcpy(z, "CP/M, Blöcke 8 KB");
         break;
     case ART_RWBW: {
         unsigned int n = scheiben(t);
@@ -1111,7 +1201,7 @@ static void zeile(struct teil *t)
         dr_kopf(t, 0);
         still--;
         if (t->ok)
-            sprintf(z, "CP/M, Bloecke %u KB", t->spb / 2);
+            sprintf(z, "CP/M, Blöcke %u KB", t->spb / 2);
         else
             strcpy(z, "ohne DR-Kopfblock");
         break;
@@ -1123,7 +1213,9 @@ static void zeile(struct teil *t)
                     a = atoi(teile[i].nr);
                 b = atoi(teile[i].nr);
             }
-        if (a == b)
+        if (!a)
+            strcpy(z, "ohne log. Laufwerk");
+        else if (a == b)
             sprintf(z, "log. Laufwerk %d", a);
         else
             sprintf(z, "log. Laufwerke %d-%d", a, b);
@@ -1135,8 +1227,39 @@ static void zeile(struct teil *t)
     default:
         strcpy(z, t->halb ? "weder DOS noch CP/M" : "nicht erkannt");
     }
-    printf("  %-2s  %c   %s %8lu %8lu %6lu  %s\n", t->nr, t->boot == 0x80 ? '*' : ' ',
-        typ, t->start, t->size, t->size / 2, z);
+    chs_text(t, 0, anf);
+    chs_text(t, t->size ? t->size - 1 : 0, end);
+    printf("%-4s%-3s%-12s%12s  %12s%10lu  %s\n", t->nr, t->boot == 0x80 ? "*" : "",
+        typ, anf, end, t->size / 2, z);
+}
+
+/* Zeile darunter: LBA (bzw. Kopfpaar) und was der Teil selbst sagt */
+static void einzeln(struct teil *t)
+{
+    char z[100];
+
+    if (t->halb)
+        sprintf(z, "      Kopf %d-%d, %lu Sektoren", 2 * t->halb - 2, 2 * t->halb - 1,
+            t->size);
+    else
+        sprintf(z, "      LBA %lu-%lu", t->start, t->start + t->size - 1);
+    switch (t->art) {
+    case ART_FAT:
+        if (bpb_lesen(t) == 0)
+            sprintf(z + strlen(z), ", OEM \"%.8s\", %u FAT%s zu %u, %u Einträge",
+                bs + 3, nfat, nfat == 1 ? "" : "s", fatsz, rootents);
+        break;
+    case ART_RWBW:
+        if (t->size % RW_SLICE)
+            sprintf(z + strlen(z), ", dahinter %lu Sektoren frei", t->size % RW_SLICE);
+        break;
+    case ART_DRCPM:
+        if (t->ok)
+            sprintf(z + strlen(z), ", Kopfblock: OFF %u, DSM %u, DRM %u",
+                t->off, t->dsm, t->drm);
+        break;
+    }
+    printf("%s\n", z);
 }
 
 static void uebersicht(int nr, const char *dev)
@@ -1159,8 +1282,11 @@ static void uebersicht(int nr, const char *dev)
         printf("  Bootsatz: ohne 55AA - NCR-Originalformat (MS-DOS 2.11), %s\n",
             r == 11 ? "eine Partition" : "2 x 5 MB");
         if (geo_ok && (heads != 4 || spt != 17))
-            warn("DMVGEOM1 nennt %u/%u Koepfe/Sektoren, das Originalformat hat 4/17\n",
+            warn("DMVGEOM1 nennt %u/%u Köpfe/Sektoren, das Originalformat hat 4/17\n",
                 heads, spt);
+        if (e_cyls)
+            printf("  belegt: %u/4/17 (erschlossen), %lu KB\n", e_cyls,
+                (ulong)e_cyls * 34);
     } else {
         rd(0, buf);
         if (memcmp(buf + 3, "16BIT  ", 7)) {
@@ -1175,10 +1301,12 @@ static void uebersicht(int nr, const char *dev)
         close(fd);
         return;
     }
-    printf("  Nr Boot Typ            Beginn Sektoren     KB  Inhalt\n");
+    printf("\n");
+    seite(kopf_struktur);
     for (i = 0; i < nteile; i++) {
         t = &teile[i];
         zeile(t);
+        einzeln(t);
         if (t->boot == 0x80)
             aktiv++;
         if (r < 10 && t->nr[0] >= '1' && t->nr[0] <= '4' && !t->nr[1])
@@ -1190,13 +1318,10 @@ static void uebersicht(int nr, const char *dev)
         }
         if (t->art == ART_DRCPM)
             dr_kopf(t, 1);
-        if (t->art == ART_RWBW && t->size % RW_SLICE && verbose)
-            printf("      Rest hinter der letzten Scheibe: %lu Sektoren\n",
-                t->size % RW_SLICE);
         map_hp = 0;
     }
     if (r < 10 && aktiv != 1)
-        warn("%d Eintraege als startbar markiert (erwartet 1)\n", aktiv);
+        warn("%d Einträge als startbar markiert (erwartet 1)\n", aktiv);
     close(fd);
 }
 
@@ -1226,7 +1351,7 @@ static void fs_pruefen(int nr, const char *dev, const char *welcher)
             still = 1;
             if (bpb_lesen(t)) {
                 still = 0;
-                printf("\nPlatte %d, Nr %s: kein brauchbarer BPB, nicht geprueft\n", nr, t->nr);
+                printf("\nPlatte %d, Nr %s: kein brauchbarer BPB, nicht geprüft\n", nr, t->nr);
                 continue;
             }
             still = 0;
@@ -1236,7 +1361,7 @@ static void fs_pruefen(int nr, const char *dev, const char *welcher)
         } else if (t->art == ART_CPM) {
             still = 0;
             halbe(t);
-            printf("\nPlatte %d, Nr %s: CP/M, Bloecke zu 8 KB\n", nr, t->nr);
+            printf("\nPlatte %d, Nr %s: CP/M, Blöcke zu 8 KB\n", nr, t->nr);
             cpm_half();
         } else if (t->art == ART_RWBW) {
             still = 0;
@@ -1248,9 +1373,9 @@ static void fs_pruefen(int nr, const char *dev, const char *welcher)
             dr_kopf(t, 0);
             still = 0;
             if (!t->ok)
-                printf("\nPlatte %d, Nr %s: ohne DR-Kopfblock, nicht geprueft\n", nr, t->nr);
+                printf("\nPlatte %d, Nr %s: ohne DR-Kopfblock, nicht geprüft\n", nr, t->nr);
             else {
-                printf("\nPlatte %d, Nr %s: CP/M (DR), Bloecke zu %u KB\n", nr, t->nr,
+                printf("\nPlatte %d, Nr %s: CP/M (DR), Blöcke zu %u KB\n", nr, t->nr,
                     t->spb / 2);
                 cpm_pruefen(t->dir0, t->spb, t->dsm, t->drm);
             }
@@ -1267,57 +1392,53 @@ static void fs_pruefen(int nr, const char *dev, const char *welcher)
     close(fd);
 }
 
-/* ---------------------------------------------------- Erklaerung -- */
+/* --------------------------------------------------------- Hilfe -- */
 static const char erklaerung[] =
-"Hilfe: was die Angaben bedeuten\n"
+"Hilfe 1/2: Geräteseite und Kürzel\n"
 "\n"
-"Platte 1-3      /dev/cfa, cfb, cfc: Einheit 0-2 (HD1-HD3) am WD1001 (K012).\n"
-"DMVGEOM1        Geometrieblock der DMV-Ports auf Zylinder 0, Kopf 0,\n"
-"                Sektor-ID 1, Kopie auf ID 2. Ohne ihn gilt die Einheit fuer\n"
-"                MS-DOS 3.3 und DR DOS als nicht vorhanden. Precomp und\n"
-"                Landezone sind Zylinder; Schritt ist die Schrittrate des\n"
-"                WD1001 (0 = gepuffert).\n"
-"Bootsatz        Sektor 0. 16BIT ab Byte 3 braucht das Z80-ROM, um von der\n"
-"                Platte zu starten; 55AA kennzeichnet die Partitionstabelle.\n"
-"                leer: Eintraege ohne Partition. DR-FDISK haelt die Tabelle\n"
-"                nach Startsektor sortiert, eine einzelne Partition steht\n"
-"                darum in Eintrag 4.\n"
-"Nr              1-4 Eintraege der Tabelle, ab 5 logische Laufwerke in der\n"
-"                erweiterten Partition (wie cfa5 beim Start von ELKS).\n"
-"                - eine Partition, A/B Haelften im NCR-Originalformat.\n"
-"Boot            * = startbare Partition (genau eine). Im Originalformat:\n"
-"                Kennung 16BIT im Bootsektor, das Z80-ROM startet davon.\n"
-"Typ             01 FAT12, 04 FAT16 bis 32 MB, 05 erweitert, 06 FAT16 ueber\n"
-"                32 MB. Typ 06 kennt erst DR DOS: MS-DOS 3.3 sieht diese\n"
-"                Partition nicht.\n"
-"Beginn          erster Sektor (LBA, ab 0), Sektoren zu 512 Byte, KB.\n"
-"Inhalt          was der Bootsektor sagt: FAT-Art und Clustergroesse.\n"
+"HD 1-3          /dev/cfa, cfb, cfc: Einheit 0-2 am WD1001 (K012)\n"
+"Größe,          ganze Platte nach dem DMVGEOM1-Block. Mit ? (NCR-Original-\n"
+"Geometrie       format) aus den Partitionen erschlossen, nur der belegte\n"
+"                Teil: CONFIG schreibt die Plattengröße nirgends hin.\n"
+"Aufteilung      Nr und Kürzel jedes Teils, * = startbar:\n"
+"  FAT12 FAT16   DOS-Partition, Typ 01 bzw. 04 (bis 32 MB)\n"
+"  FAT2G         Typ 06, FAT16 über 32 MB: kennt erst DR DOS, MS-DOS 3.3\n"
+"                sieht die Partition nicht\n"
+"  EXTND         erweiterte Partition (Typ 05), logische Laufwerke ab Nr 5\n"
+"  RWBWn         CP/M: RomWBW-Behälter (Typ 2E) mit n Scheiben zu 8 MB,\n"
+"                lesbar von jeder CP/M-Fassung\n"
+"  CPMnn         CP/M-86 nach DRs Muster (Typ DB), nn MB, mit Kopfblock\n"
+"  DOS05 CPM05   NCR-Originalformat 2 x 5 MB, Hälfte A Kopf 0-1, B Kopf 2-3\n"
+"  DOS10 DOS20   NCR-Originalformat, eine DOS-Partition über 4 Köpfe\n"
+"  ?52           anderer Typ (hier 52), weder DOS noch CP/M der DMV\n"
+"Befunde         F Fehler: so liest kein DMV-System die Platte richtig\n"
+"                W Warnung: ungewöhnlich, kann gewollt sein\n"
+"FDISK von MS-DOS 3.3 zeigt Typ 2E und DB als \"Non-DOS\" und löscht sie\n"
+"nicht. DR-FDISK nennt DB \"CP/M\" und löscht es; 2E und 52 heißen dort\n"
+"\"(other)\" und lassen sich nur mit FDISK /D löschen.\n"
 "\n"
-"NCR-Originalformat (MS-DOS 2.11 CONFIG, FMT20): ohne Tabelle und ohne\n"
-"DMVGEOM1, 4 Koepfe, 17 Sektoren. Eine Partition ueber alle Koepfe (10 MB\n"
-"CONFIG, 20 MB FMT20) oder 2 x 5 MB: Haelfte A auf Kopf 0-1, B auf Kopf\n"
-"2-3, je DOS oder CP/M (CP/M-86 kennt hoechstens 10 MB). Hier ist OEM\n"
-"16BIT im Bootsektor richtig.\n"
+"Hilfe 2/2: Strukturseite, Dateisysteme, Tasten\n"
 "\n"
-"Befunde stehen unter der Zeile, zu der sie gehoeren:\n"
-"  FEHLER   so liest kein DMV-DOS die Platte richtig\n"
-"  Warnung  ungewoehnlich, kann gewollt sein\n"
-"Die Partitionen der DMV-Ports tragen im Bootsektor OEM \"IBM  3.3\" (sonst\n"
-"nimmt MS-DOS 3.3 den BPB nicht), Medium F8 und in Byte 24h die Einheit\n"
-"(SDH-Bits 18h), in Byte 25h die BIOS-Laufwerksnummer.\n"
-"\n"
-"Tasten (Statuszeile unten):\n"
-"  G      Geraete: je Platte Groesse, Geometrie, Aufteilung, Befunde\n"
-"  1 2 3  Struktur der Platte: Geometrie, Bootsatz, Tabelle, je Teil CHS,\n"
-"         OEM, versteckte Sektoren und BPB, Befunde unter ihrer Zeile\n"
-"  D      Dateisysteme der gewaehlten Platte pruefen: FAT (Kopien, Cluster,\n"
-"         Ketten, Verzeichnisse, verlorene Cluster), CP/M (Verzeichnis,\n"
-"         Bloecke)\n"
-"  H      diese Hilfe\n"
-"  Q      Ende; bei \"weiter mit Eingabetaste\" bricht Q nur die Seite ab\n"
-"Ohne Menue: dmvhd -n [-v] [-e], dmvfs [-v] [Platte [Nr]]; dmvfs cfb 5\n"
-"prueft nur Nr 5 auf Platte 2, dmvfs -v zeigt dazu die Dateien.\n"
-"Alles wird nur gelesen; dmvhd und dmvfs schreiben nie auf die Platte.\n";
+"DMVGEOM1        Geometrieblock der DMV-Ports (Zylinder 0, Kopf 0, Sektor-\n"
+"                ID 1, Kopie auf ID 2). Ohne ihn gilt die Einheit für\n"
+"                MS-DOS 3.3 und DR DOS als nicht vorhanden.\n"
+"Bootsatz        Sektor 0: 16BIT ab Byte 3 braucht das Z80-ROM zum Start,\n"
+"                55AA kennzeichnet die Tabelle. Eine einzelne Partition legt\n"
+"                DR-FDISK in Eintrag 4.\n"
+"Anfang, Ende    Zylinder/Kopf/Sektor. Darunter LBA (bzw. Kopfpaar) und\n"
+"                was der Teil selbst sagt: OEM und FATs aus dem Bootsektor\n"
+"                (MS-DOS 3.3 braucht \"IBM  3.3\", im Originalformat ist\n"
+"                \"16BIT\" richtig), Scheiben, DR-Kopfblock.\n"
+"Dateisysteme    FAT: Kopien, Cluster, Ketten, Verzeichnisse, verlorene\n"
+"                Cluster. CP/M: Verzeichnis und Blöcke je Hälfte, je\n"
+"                RomWBW-Scheibe (4-KB-Blöcke) oder DR-Bereich (DPB aus dem\n"
+"                Kopfblock).\n"
+"Tasten          G Geräte, 1 2 3 Struktur, D Dateisysteme der Platte,\n"
+"                L Diskettenlaufwerke (Schritttest), H Hilfe, Q Ende;\n"
+"                bei \"weiter mit Eingabetaste\" bricht Q nur die Seite ab\n"
+"Ohne Menü       dmvhd -n [-v] [-e], dmvfs [-v] [Platte [Nr]], dmvhd -s\n"
+"Alles wird nur gelesen; dmvhd und dmvfs schreiben nie auf eine Platte.\n"
+"Der Schritttest bewegt nur die Köpfe der Diskettenlaufwerke.\n";
 
 /* ------------------------------------------------------- main -- */
 static const char *geraet(const char *s)
@@ -1351,7 +1472,7 @@ static void ausgabe(int art, const char *nr)
     if (art != 'd')
         verbose = art == 'v';   /* bei d: -v zeigt die Dateien */
     if (art == 'd')
-        printf("Dateisysteme pruefen (dmvfs), nur lesend\n");
+        printf("Dateisysteme prüfen (dmvfs), nur lesend\n");
     else
         printf("dmvhd - Plattendiagnose NCR DMV, nur lesend\n");
     for (i = 0; i < ndev && !abbruch; i++) {
@@ -1387,14 +1508,21 @@ static void status(const char *t)
     fflush(stdout);
 }
 
-/* Zusammenfassung einer Platte fuer die Geraeteseite */
-static void kurz(int i)
+/* ------------------------------------------------- Geraeteseite -- */
+static const char kopf_geraete[] =
+"HD  Gerät      Größe     Geometrie   Aufteilung (Nr Inhalt)        Befunde\n"
+"==============================================================================\n";
+
+/* eine Platte: Groesse, Geometrie, Teile zu dritt je Zeile, Befunde */
+static void kurz(int i, int dicht)
 {
     int k, n = 0;
-    char auf[40], groesse[12], geo[14], bef[16];
+    char z[160], e[16], groesse[16], geo[16], bef[16];
 
     if (platte_lesen(devs[i], pnr(i) - 1) < 0) {
-        printf("  %-6d %-9s nicht vorhanden\n", pnr(i), devs[i]);
+        printf("%-4d%-11s%s\n", pnr(i), "-", "nicht vorhanden");
+        if (!dicht)
+            printf("\n");
         return;
     }
     close(fd);
@@ -1405,48 +1533,249 @@ static void kurz(int i)
     if (geo_ok) {
         sprintf(groesse, "%lu KB", disksects / 2);
         sprintf(geo, "%u/%u/%u", cyls, heads, spt);
+    } else if (e_cyls) {
+        sprintf(groesse, "%lu KB", (ulong)e_cyls * 34);
+        sprintf(geo, "%u/4/17?", e_cyls);
     } else {
         strcpy(groesse, "-");
-        strcpy(geo, "4/17?");
+        strcpy(geo, "?");
     }
-    auf[0] = 0;
-    if (original)
-        strcpy(auf, "Original: ");
-    for (k = 0; k < nteile && strlen(auf) < 26; k++) {
-        struct teil *t = &teile[k];
-        if (t->art == ART_ERW)
-            continue;
-        sprintf(auf + strlen(auf), "%s%s%s%s", n++ ? ", " : "",
-            t->nr[0] == '-' ? "" : t->nr, t->nr[0] == '-' ? "" : " ",
-            t->art == ART_FAT ? (t->typ == 0x01 ? "FAT12" : "FAT16") :
-            t->art == ART_CPM || t->art == ART_DRCPM ? "CP/M" :
-            t->art == ART_RWBW ? "RomWBW" : "?");
-    }
-    if (!n)
-        strcat(auf, original ? "nicht erkannt" : "keine Partition");
     if (!fehler && !warnungen)
         strcpy(bef, "keine");
     else
         sprintf(bef, "%dF %dW", fehler, warnungen);
-    printf("  %-6d %-9s %9s  %-11s %-28.28s %s\n", pnr(i), devs[i], groesse, geo, auf, bef);
+    sprintf(z, "%-4d%-11.10s%-10s%-12s", pnr(i), devs[i], groesse, geo);
+    for (k = 0; k < nteile; k++) {
+        struct teil *t = &teile[k];
+        char kz[8];
+        kuerzel(t, kz);
+        sprintf(e, "%s %s%s", t->nr, kz, t->boot == 0x80 ? "*" : "");
+        sprintf(z + strlen(z), "%-10s", e);
+        if (++n % 3 == 0 || k == nteile - 1) {
+            if (n <= 3) {           /* Befunde in die erste Zeile */
+                while (strlen(z) < 67)
+                    strcat(z, " ");
+                strcat(z, bef);
+            }
+            while (strlen(z) && z[strlen(z) - 1] == ' ')
+                z[strlen(z) - 1] = 0;
+            printf("%s\n", z);
+            sprintf(z, "%37s", "");
+        }
+    }
+    if (!nteile) {
+        strcat(z, original ? "nicht erkannt" : "keine Partition");
+        while (strlen(z) < 67)
+            strcat(z, " ");
+        printf("%s%s\n", z, bef);
+    }
+    if (!dicht)
+        printf("\n");
 }
 
-static void geraete(void)
+static void geraete(int dicht)
 {
     int i;
 
-    printf("dmvhd - Plattendiagnose NCR DMV, nur lesend\n\n");
-    printf("  %-6s %-9s %9s  %-11s %-28s %s\n", "Platte", "Geraet", "Groesse",
-        "Zyl/Kpf/Sek", "Aufteilung (Nr Inhalt)", "Befunde");
+    seite(kopf_geraete);
     for (i = 0; i < ndev; i++)
-        kurz(i);
-    printf("\nZyl/Kpf/Sek aus dem DMVGEOM1-Block; Befunde: F Fehler, W Warnungen.\n");
+        kurz(i, dicht);
+}
+
+static const char fuss_geraete[] =
+"Geometrie (Zyl/Kpf/Sek) aus dem DMVGEOM1-Block; mit ? aus den von CONFIG\n"
+"angelegten Partitionen erschlossen (nur der belegte Teil der Platte).\n"
+"Befunde: F Fehler, W Warnungen; * startbar. Die Kürzel erklärt die Hilfe.\n";
+
+/* ------------------------------------------------ Startbildschirm -- */
+/* Speicher: der Z80 zaehlt die 64-KB-Baenke ueber der Hauptplatine im
+   Postfach 0:FE06 (MEM16). Ob die 8088 ueber 512 KB auch RAM sieht
+   (K235+ mit K0815), zeigt eine Schreib-Lese-Probe je Bank ab 80000h;
+   ohne RAM spiegelt sich dort das ROM der Karte. Der Speicher darueber
+   gehoert nicht ELKS, die Probe stellt den alten Inhalt wieder her.
+   Obergrenze 1020 KB: FF000h-FFFFFh haelt der Dekoder fuer das ROM frei. */
+static void speicher(unsigned int *z80, unsigned int *cpu)
+{
+#ifdef __ia16__
+    unsigned int bank, alt, kb = 512;
+    volatile unsigned short __far *p;
+
+    *z80 = *(volatile unsigned char __far *)0x0000FE06UL * 64 + 64;
+    for (bank = 8; bank < 16; bank++) {     /* 80000h, 90000h ... F0000h */
+        p = (volatile unsigned short __far *)((unsigned long)bank << 28);
+        alt = *p;
+        *p = 0x5AA5;
+        if (*p != 0x5AA5) {
+            *p = alt;
+            break;
+        }
+        *p = 0xA55A;
+        if (*p != 0xA55A) {
+            *p = alt;
+            break;
+        }
+        *p = alt;
+        kb += bank == 15 ? 60 : 64;
+    }
+    *cpu = kb;
+#else
+    *z80 = *cpu = 512;
+#endif
+    if (*z80 > 1020)
+        *z80 = 1020;
+}
+
+/* K235 hat einen 8259, dessen Maskenregister (91h) der Kern beschrieben
+   hat; ohne Interruptcontroller (K230/K231) liest der Bus FFh */
+static void startseite(void)
+{
+    int k235 = inb(0x91) != 0xFF;
+    unsigned int z80, cpu;
+
+#ifdef __ia16__
+    sleep(5);                   /* Tux und die Startmeldungen stehen lassen */
+#endif
+    printf("\fNCR Decision Mate V - ELKS-Prüfsystem %s, nur lesend\n\n", DMV_VERSION);
+    speicher(&z80, &cpu);
+    if (cpu > 512)
+        printf("Arbeitsspeicher  %u KB, davon nutzt ELKS 512 KB\n", cpu);
+    else if (z80 > 512)
+        printf("Arbeitsspeicher  %u KB, die 8088 sieht davon 512 KB\n", z80);
+    else
+        printf("Arbeitsspeicher  %u KB\n", z80);
+    printf("CPU-Karte        %s\n", !k235 ? "K230 oder K231 (8088, ohne Interruptcontroller)" :
+        cpu > 512 ? "K235+ (V20 mit 8259, sieht über 512 KB)" :
+        "K235 (8088/V20 mit Interruptcontroller 8259)");
+    printf("Disketten        Schritttest im Menü von dmvhd (Taste L)\n\n");
+    geraete(1);
+    printf("\nEinzelheiten, Strukturen und Dateisysteme: dmvhd\n");
+}
+
+/* ------------------------------------------ Diskettenlaufwerke -- */
+/* Schritttest am uPD765 (50h Status, 51h Daten, 13h Bit 3 Interrupt,
+   14h Motor): Spur 0 suchen, 44 Spuren hinein, 43 zurueck. Ein Laufwerk
+   mit 40 Spuren (DD, 48 tpi) laeuft am Anschlag auf, kommt bei Spur 0 an
+   und meldet sie; eines mit 80 Spuren (QD, 96 tpi) steht auf Spur 1. */
+#define FDC_MSR     0x50
+#define FDC_DAT     0x51
+#define FDC_INT     0x13
+#define FDC_MOTOR   0x14
+
+static int fdc_aus(int b)
+{
+    long n;
+
+    for (n = 0; n < 60000L; n++)
+        if ((inb(FDC_MSR) & 0xC0) == 0x80) {
+            outb(b, FDC_DAT);
+            return 0;
+        }
+    return -1;
+}
+
+static int fdc_ein(void)
+{
+    long n;
+
+    for (n = 0; n < 60000L; n++)
+        if ((inb(FDC_MSR) & 0xC0) == 0xC0)
+            return inb(FDC_DAT);
+    return -1;
+}
+
+/* Befehl mit Kopfbewegung, dann SENSE INTERRUPT STATUS; ST0 oder -1 */
+static int fdc_bewegen(int u, int befehl, int spur)
+{
+    long n;
+    int st0;
+
+    outb(0, FDC_MOTOR);         /* Motor nachtriggern */
+    if (fdc_aus(befehl) || fdc_aus(u) || (befehl == 0x0F && fdc_aus(spur)))
+        return -1;
+    for (n = 0; n < 400000L; n++)
+        if (inb(FDC_INT) & 0x08)
+            break;
+    if (n == 400000L || fdc_aus(0x08))
+        return -1;
+    st0 = fdc_ein();
+    fdc_ein();                  /* PCN */
+    return st0;
+}
+
+/* SENSE DRIVE STATUS: waehlt das Laufwerk und liefert ST3 (-1: keine
+   Antwort). Bit 5 bereit, 4 Spur 0, 3 zweiseitig. */
+static int fdc_st3(int u)
+{
+    outb(0, FDC_MOTOR);
+    if (fdc_aus(0x04) || fdc_aus(u))
+        return -1;
+    return fdc_ein();
+}
+
+/* bis zu etwa 3 s warten, bis das Laufwerk bereit meldet. Bereit heisst:
+   Motor laeuft und die Indexpulse einer eingelegten Diskette kommen; ohne
+   Diskette meldet ein Laufwerk nie bereit, und der Controller steppt dann
+   nicht. */
+static int fdc_bereit(int u)
+{
+    int i, st3 = -1;
+    unsigned int k;
+
+    for (i = 0; i < 300; i++) {
+        st3 = fdc_st3(u);
+        if (st3 < 0 || (st3 & 0x20))
+            return st3;
+        for (k = 0; k < 2500; k++)
+            inb(FDC_MSR);
+    }
+    return st3;
+}
+
+static void disketten(void)
+{
+    int u, st0, st3;
+
+    printf("Diskettenlaufwerke: Schritttest\n\n");
+    printf("Je Laufwerk: Spur 0 suchen, 44 Spuren hinein, 43 zurück. Mit 40\n");
+    printf("Spuren läuft der Kopf am Anschlag auf und meldet danach Spur 0, mit\n");
+    printf("80 Spuren steht er auf Spur 1. Im Laufwerk muss eine Diskette liegen\n");
+    printf("(irgendeine): erst die drehende Diskette meldet das Laufwerk bereit.\n\n");
+    for (u = 0; u < 2; u++) {
+        printf("Laufwerk %c: ", 'A' + u);
+        fflush(stdout);
+        st3 = fdc_bereit(u);
+        if (st3 < 0) {
+            printf("keine Antwort vom Diskettencontroller\n");
+            continue;
+        }
+        if (!(st3 & 0x20)) {
+            printf("nicht bereit (keine Diskette oder kein Laufwerk)\n");
+            continue;
+        }
+        st0 = fdc_bewegen(u, 0x07, 0);
+        if (st0 >= 0 && (st0 & 0x10))           /* mehr als 77 Schritte */
+            st0 = fdc_bewegen(u, 0x07, 0);
+        if (st0 < 0 || (st0 & 0xC0)) {
+            printf("Spur 0 nicht gefunden (ST0 %02X)\n", st0 & 0xFF);
+            continue;
+        }
+        if (fdc_bewegen(u, 0x0F, 44) < 0 || fdc_bewegen(u, 0x0F, 1) < 0 ||
+            (st3 = fdc_st3(u)) < 0) {
+            printf("Schritttest abgebrochen\n");
+            continue;
+        }
+        fdc_bewegen(u, 0x07, 0);
+        printf("%s, %s\n", (st3 & 0x10) ? "40 Spuren (DD, 48 tpi)" : "80 Spuren (QD, 96 tpi)",
+            (st3 & 0x08) ? "zweiseitig" : "einseitig gemeldet");
+    }
+    printf("\nGeprüft wird die Mechanik, nicht das Lesen. Ein Laufwerk, das\n");
+    printf("über die 40. Spur hinaus fährt, gilt als QD.\n");
 }
 
 int main(int argc, char **argv)
 {
     static char dv[3][64];
-    int i, n = 0, fs = 0, nur = 0, art, k, wahl = 0;
+    int i, n = 0, fs = 0, nur = 0, art, k, wahl = 0, start = 0;
     const char *p = strrchr(argv[0], '/'), *nr = 0;
 
     if (!strcmp(p ? p + 1 : argv[0], "dmvfs"))
@@ -1460,10 +1789,12 @@ int main(int argc, char **argv)
             fs = 1;
         else if (!strcmp(argv[i], "-e"))
             nur = 1;
+        else if (!strcmp(argv[i], "-s"))
+            start = 1;
         else if (argv[i][0] == '-') {
-            fprintf(stderr, "Aufruf: dmvhd [-n] [-v] [-e] [Platte ...]\n"
+            fprintf(stderr, "Aufruf: dmvhd [-n] [-v] [-e] [-s] [Platte ...]\n"
                 "        dmvfs [-v] [-n] [Platte [Nr]]\n"
-                "  -n ohne Menue, -v Einzelheiten, -e Erklaerung\n");
+                "  -n ohne Menü, -v Einzelheiten, -e Hilfe, -s Startbildschirm\n");
             return 2;
         } else if (fs && n == 1 && !nr && strlen(argv[i]) <= 2)
             nr = argv[i];       /* Nr aus der Tabelle: 1-4, 5.., -, A, B */
@@ -1477,6 +1808,12 @@ int main(int argc, char **argv)
     if (!isatty(1) || !isatty(0))
         seitenweise = 0;
     ndev = n ? n : 3;
+    if (start) {
+        seitenweise = 0;
+        startseite();
+        fflush(stdout);
+        return 0;
+    }
     if (!seitenweise || nur || fs || nr) {      /* einmal ausgeben */
         if (!n) {               /* Vorgabe: nur die vorhandenen Platten */
             for (i = k = 0; i < 3; i++)
@@ -1494,7 +1831,8 @@ int main(int argc, char **argv)
         return fehler ? 1 : 0;
     }
 
-    /* Menue: g Geraete, 1-3 Struktur, d Dateisysteme, h Hilfe, q Ende */
+    /* Menue: g Geraete, 1-3 Struktur, d Dateisysteme, l Disketten,
+       h Hilfe, q Ende */
     menue = 1;
     printf("\033[1;24r");
     art = 'g';
@@ -1502,10 +1840,14 @@ int main(int argc, char **argv)
         abbruch = 0;
         fehler = warnungen = 0;
         printf("\f");
-        if (art == 'g')
-            geraete();
-        else if (art == 'h')
+        if (art == 'g') {
+            printf("dmvhd - Plattendiagnose NCR DMV, nur lesend\n\n");
+            geraete(0);
+            seite(fuss_geraete);
+        } else if (art == 'h')
             seite(erklaerung);
+        else if (art == 'l')
+            disketten();
         else {
             for (i = 0; i < ndev && pnr(i) != wahl; i++)
                 ;
@@ -1513,29 +1855,28 @@ int main(int argc, char **argv)
                 printf("Platte %d gibt es nicht.\n", wahl);
             else if (art == 'd') {
                 verbose = 0;
-                printf("Platte %d: Dateisysteme pruefen\n", wahl);
+                printf("Platte %d: Dateisysteme prüfen\n", wahl);
                 fs_pruefen(wahl, devs[i], 0);
                 printf("\n%d Fehler, %d %s\n", fehler, warnungen,
                     pl(warnungen, "Warnung", "Warnungen"));
             } else {
-                verbose = 1;
-                printf("Platte %d: Struktur\n\n", wahl);
+                verbose = 0;
                 uebersicht(wahl, devs[i]);
                 printf("\n%d Fehler, %d %s\n", fehler, warnungen,
                     pl(warnungen, "Warnung", "Warnungen"));
             }
         }
         if (!wahl)
-            status("{1} {2} {3} Struktur der Platte   {H} Hilfe   {Q} Ende");
+            status("{1} {2} {3} Struktur der Platte   {L} Disketten   {H} Hilfe   {Q} Ende");
         else {
-            char z[80];
-            sprintf(z, "{G} Geraete   {D} Dateisysteme Platte %d   {1} {2} {3} Struktur   "
+            char z[100];
+            sprintf(z, "{G} Geräte   {D} Dateisysteme Platte %d   {1} {2} {3} Struktur   "
                 "{H} Hilfe   {Q} Ende", wahl);
             status(z);
         }
         do
             k = taste();
-        while (!strchr(wahl ? "gdh123q" : "h123q", k) || !k);
+        while (!strchr(wahl ? "gdhl123q" : "hl123q", k) || !k);
         if (k == 'q')
             break;
         if (k >= '1' && k <= '3') {

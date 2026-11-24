@@ -31,6 +31,8 @@ mkfat: mkfat.o $(TINYPRINTF)
 partype: partype.o
 	$(LD) $(LDFLAGS) -o partype partype.o $(LDLIBS)
 
+dmvhd.o: $(ELKS_DIR)/include/arch/dmvver.h
+
 dmvhd: dmvhd.o
 	$(LD) $(LDFLAGS) -o dmvhd -maout-heap=0x6000 dmvhd.o $(LDLIBS)
 
