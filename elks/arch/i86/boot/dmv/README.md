@@ -61,6 +61,15 @@ starts ELKS from MS-DOS or DR DOS (files ELKS.IMG and ROMFS.BIN next to it).
   bases are in dmv.config and as defaults in bootdmv.s and elksdmv.asm.
 - The boot sector steps twice per track if a read fails, so the 40-track
   floppy also boots in an 80-track (QD) drive.
+- Memory: before loading, the boot sector reads the number of 64 KB banks
+  the Z80 counted (mailbox 0:FE06). With less than 512 KB it says so
+  through the card ROM's DISPLAY, waits for a key (time to change the
+  disk) and gives the machine back to the Z80. The sector counts sit at
+  fixed offsets 0Ah and 0Ch, patched by mkdmvimg.py. ELKS uses 512 KB; the
+  boot screen (`dmvhd -s` from /etc/rc.sys) shows what is there, RAM above
+  512 KB (K235+ with K0815) by a write/read probe per bank.
+- Umlauts: texts are UTF-8; the console maps the C3h row (ä ö ü Ä Ö Ü ß)
+  to the codes of the DMV character generator.
 - Timer: 8253 channel 2 (500 kHz) on IR0 of the K235's 8259. On the K230
   the idle loop watches the counter and raises INT 08h itself
   (`timer-dmv.c`).

@@ -5,7 +5,7 @@
   sectors 1..  arch/i86/boot/Image  -> ROM_BASE:0000
   then         image/romfs.bin      -> ROMFS_BASE:0000
 
-The sector counts are patched in after the "SECC" and "INIT" markers.
+The sector counts are patched in at offsets 0Ah and 0Ch of the boot sector.
 Usage: mkdmvimg.py bootdmv.bin Image romfs.bin out.img|directory
 (a directory gets ELKSDMV_<version>.IMG, version from include/arch/dmvver.h)
 """
@@ -16,11 +16,9 @@ def pad(b, n):
         sys.exit('mkdmvimg: %d bytes do not fit into %d' % (len(b), n))
     return b + bytes(n - len(b))
 
-def patch(boot, marker, value):
-    at = boot.find(marker)
-    if at < 0:
-        sys.exit('mkdmvimg: marker %r missing in boot sector' % marker)
-    boot[at + 4:at + 6] = value.to_bytes(2, 'little')
+def patch(boot, at, value):
+    # sector counts at fixed offsets behind the 7-byte signature "16BIT  "
+    boot[at:at + 2] = value.to_bytes(2, 'little')
 
 boot, image, romfs, out = sys.argv[1:5]
 
@@ -49,8 +47,10 @@ boot = bytearray(pad(open(boot, 'rb').read(), 512))
 k = open(image, 'rb').read()
 r = open(romfs, 'rb').read()
 ks, rs = (len(k) + 511) // 512, (len(r) + 511) // 512
-patch(boot, b'SECC', ks)
-patch(boot, b'INIT', rs)
+if bytes(boot[3:10]) != b'16BIT  ':
+    sys.exit('mkdmvimg: boot sector without the signature "16BIT  "')
+patch(boot, 0x0A, ks)
+patch(boot, 0x0C, rs)
 img = pad(bytes(boot) + pad(k, ks * 512) + pad(r, rs * 512), 368640)
 open(out, 'wb').write(img)
 print('mkdmvimg: %s %s: kernel %d, romfs %d sectors, %d of 720 used'

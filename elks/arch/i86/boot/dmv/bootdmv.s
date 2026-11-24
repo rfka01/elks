@@ -67,28 +67,25 @@ start:
     ; identifier; without it the ROM rejects the disk and falls through to the
     ; hard disk. The 8th byte (offset 0x0a) is not checked.
     db "16BIT  "                    ; offset 0x03-0x09: REQUIRED boot signature
-    db 0x00                         ; offset 0x0a: padding (unchecked)
+
+; Sector counts at fixed offsets 0x0A and 0x0C (the ROM checks only seven
+; bytes of the signature), patched by mkdmvimg.py.
+kernel_sectors  dw 95
+initrd_sectors  dw 256
 
 ; ---- runtime state -------------------------------------------------------
-cur_lba         dw 0                ; current source LBA
+cur_lba         dw 1                ; current source LBA, the kernel starts at 1
 sectors_left    dw 0                ; sectors still to read for this region
 run_len         dw 0                ; sectors in the current track-run
 step            db 1                ; 2: 48-tpi disk in a 96-tpi (QD) drive
 dst_seg         dw 0                ; current copy-up destination segment
-dst_ofs         dw 0                ; current copy-up destination offset
 
-; Patched by mkdisks_dmv.pl. After "SECC" comes the kernel sector count; after
-; "INIT" comes the initrd sector count.
-                db 'SECC'
-kernel_sectors  dw 95
-                db 'INIT'
-initrd_sectors  dw 256
 
 ; READ DATA command template (9 bytes). We use 0x46 (MFM, no MT): each READ
 ; command stays on a single head, which matches our per-head run_len logic.
 ;   +1 = (head<<2) | unit    +2 = track   +3 = head   +4 = sector
 ;   +5 = N (2 = 512 bytes)    +6 = EOT     +7 = GPL (0x1B)   +8 = DTL (0xFF)
-fdc_cmd         db 0x46, 0x00, 0x00, 0x00, 0x00, 0x02, SPT, 0x1B, 0xFF
+fdc_cmd         db 0x46, 0x00, 0x00, 0x00, 0x00, 0x02, SPT+1, 0x1B, 0xFF
 ; SEEK command template (3 bytes): 0F, (head<<2)|unit, track
 seek_cmd        db 0x0F, 0x00, 0x00
 ; SENSE INTERRUPT STATUS (1 byte)
@@ -97,6 +94,12 @@ sense_cmd       db 0x08
 ; ---------------------------------------------------------------------------
 boot_main:
     cli
+    ; Memory first: the kernel goes to ROM_BASE (up to 512 KB). The Z80 has
+    ; counted the 64 KB banks beyond the main board in the mailbox at 0:FE06
+    ; (MEM16); with fewer than 7 there is no RAM where we would load. DS is
+    ; still 0 from the ROM.
+    cmp byte [0xFE06], 7
+    jb zu_wenig
     ; ROM entered with CS=0x200, DS=ES=SS=0, SP=0. Establish our own world:
     ; make DS = CS so data labels resolve, and set a safe stack.
     mov ax, cs                      ; ax = 0x200
@@ -115,21 +118,12 @@ boot_main:
 .motor_wait:
     loop .motor_wait
 
-    ; LED: light the bottom LED (label 8) to show we reached the load loop.
-    mov al, 0xFE
-    out 0x00, al
-
     ; ---- region 1: kernel -> KERNEL_SEG:KERNEL_OFS ----------------------
-    mov word [cur_lba], 1
     mov ax, [kernel_sectors]
     mov [sectors_left], ax
-    mov word [dst_seg], KERNEL_SEG  ; dst_ofs stays 0 (KERNEL_OFS, INITRD_OFS)
+    mov word [dst_seg], KERNEL_SEG  ; offset stays 0 (KERNEL_OFS, INITRD_OFS)
     call load_region
     jc .error
-
-    ; LED: two lit (labels 8 and 7) after the kernel is in place.
-    mov al, 0xFC
-    out 0x00, al
 
     ; ---- region 2: initrd -> INITRD_SEG:INITRD_OFS ----------------------
     ; initrd source LBA = 1 + kernel_sectors (cur_lba already points there)
@@ -138,10 +132,6 @@ boot_main:
     mov word [dst_seg], INITRD_SEG
     call load_region
     jc .error
-
-    ; LED: progress mask before handoff (labels 8,7,6 lit).
-    mov al, 0xF8
-    out 0x00, al
 
 .handoff:
     ; ELKS setup is a PC option ROM: its entry at offset 3 sets the INT 19h
@@ -159,6 +149,24 @@ boot_main:
     xor al, al
     out 0x00, al
     jmp $
+
+zu_wenig:
+    ; Too little memory: say so through the card ROM (FF00:0000 is JMP
+    ; DISPLAY; BX points to a counted string, read through DS = 0), wait
+    ; for a key (time to change the disk) and give the machine back to the
+    ; Z80 as REBOOT.COM does: OUT (11h),A / RST 0 at 0:F110, then SWITCH.
+    mov bx, 0x2000 + meldung
+    call 0xFF00:0x0000
+.taste:
+    in al, 0x41
+    test al, 1
+    jz .taste
+    mov word [0xF110], 0x11D3
+    mov byte [0xF112], 0xC7
+    jmp 0xFF00:0x0018
+
+meldung         db meldung_e - meldung - 1, "ELKS: 512 KB n", 0x96, "tig, Taste=Neustart"
+meldung_e:
 
 ; ---------------------------------------------------------------------------
 ; load_region: read [sectors_left] sectors starting at [cur_lba] and place them
@@ -186,14 +194,13 @@ load_region:
     ; cross a 64 KB boundary. (Advancing the offset instead let DI wrap inside
     ; ES mid-copy and overwrite the start of the segment - which destroyed the
     ; initrd header at 3000:0000, so Gallery and Player found no files.)
-    mov ax, [run_len]
-    mov cl, 5
-    shl ax, cl                      ; run_len * 32 paragraphs
-    add [dst_seg], ax
     ; advance source LBA and remaining count
     mov ax, [run_len]
     add [cur_lba], ax
     sub [sectors_left], ax
+    mov cl, 5
+    shl ax, cl                      ; run_len * 32 paragraphs
+    add [dst_seg], ax
     jmp .loop
 .done:
     clc
@@ -206,32 +213,20 @@ load_region:
 ; copy_run_up: copy run_len*512 bytes from SCRATCH_SEG:SCRATCH_OFS to
 ; [dst_seg]:[dst_ofs] via far rep movsw. Preserves nothing of interest.
 copy_run_up:
-    push ax
-    push cx
-    push si
-    push di
     push ds
-    push es
 
     mov ax, SCRATCH_SEG
     mov ds, ax
-    mov si, SCRATCH_OFS
+    xor si, si                      ; SCRATCH_OFS
     mov es, [cs:dst_seg]
-    mov di, [cs:dst_ofs]
+    xor di, di
 
-    mov ax, [cs:run_len]
-    mov cl, 8
-    shl ax, cl                      ; run_len * 256 words = run_len*512 bytes
-    mov cx, ax
+    mov ch, [cs:run_len]            ; run_len * 256 words = run_len*512 bytes
+    xor cl, cl
     cld
     rep movsw
 
-    pop es
     pop ds
-    pop di
-    pop si
-    pop cx
-    pop ax
     ret
 
 ; ---------------------------------------------------------------------------
@@ -240,10 +235,6 @@ copy_run_up:
 ; cur_lba up to the end of the current track (or sectors_left, whichever is
 ; smaller). Sets run_len. CF set on error.
 read_track_run:
-    push ax
-    push bx
-    push cx
-    push dx
 
     ; Retrigger the motor for every run: the motor timer on the main board
     ; switches off after a few seconds, the drive then drops READY and the
@@ -278,8 +269,7 @@ read_track_run:
     mov [run_len], ax               ; sectors to read this pass (>=1)
 
     ; head<<2 | unit
-    mov al, dh
-    mov bl, al
+    mov bl, dh
     shl bl, 1
     shl bl, 1                       ; head<<2
 
@@ -287,10 +277,9 @@ read_track_run:
     mov [fdc_cmd+2], ch             ; track
     mov [fdc_cmd+3], dh             ; head
     mov [fdc_cmd+4], cl             ; start sector
-    ; EOT = SPT+1 (one past the last sector): the FDC never matches
-    ; current-sector == EOT within a real track, so the DMA terminal count
-    ; alone bounds the transfer.
-    mov byte [fdc_cmd+6], SPT+1
+    ; EOT is SPT+1 in the template (one past the last sector): the FDC never
+    ; matches current-sector == EOT within a real track, so the DMA terminal
+    ; count alone bounds the transfer.
 
     mov [seek_cmd+1], bl            ; (head<<2)|unit
     mov al, ch                      ; physical track: cylinder * step
@@ -374,18 +363,10 @@ read_track_run:
     jnz .read_fail
 
     clc
-    pop dx
-    pop cx
-    pop bx
-    pop ax
     ret
 
 .read_fail:
     stc
-    pop dx
-    pop cx
-    pop bx
-    pop ax
     ret
 
 .result_buf     times 7 db 0
