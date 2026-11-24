@@ -227,6 +227,8 @@ static ulong chs2lba(unsigned int c, unsigned int h, unsigned int s)
 #define ART_CPM     2
 #define ART_ERW     3
 #define ART_ANDERS  4
+#define ART_RWBW    5           /* 2Eh: RomWBW-Behaelter, Scheiben zu 8 MB */
+#define ART_DRCPM   6           /* DBh: CP/M-86 nach DRs PC-Muster */
 #define MAXTEIL     16
 
 struct teil {
@@ -236,7 +238,18 @@ struct teil {
     ulong start, size;
     ulong hidden;               /* erwartete versteckte Sektoren im BPB */
     unsigned int sc, sh, ss, ec, eh, es;    /* CHS aus dem Eintrag */
+    /* CP/M (DBh): aus dem DR-Kopfblock; ok = Kopfblock brauchbar */
+    uchar ok;
+    ulong dir0;                 /* erster Sektor des Verzeichnisses */
+    unsigned int dsm, drm, spb; /* hoechster Block, Eintrag, Sektoren/Block */
 };
+
+/* RomWBW hd1k: Scheibe 8 MB = 16384 Sektoren, davon 32 Startsektoren,
+   Bloecke zu 4 KB (8 Sektoren), 2044 Bloecke, 1024 Verzeichniseintraege */
+#define RW_SLICE    16384L
+#define RW_SYS      32
+#define RW_DSM      2043
+#define RW_DRM      1023
 static struct teil teile[MAXTEIL];
 static int nteile;
 static char leer[12];           /* leere Eintraege im MBR, "1, 2, 3" */
@@ -266,6 +279,8 @@ static const char *typname(int t)
     case 0x04: return "FAT16 <32M";
     case 0x05: return "erweitert";
     case 0x06: return "FAT16 >32M";
+    case 0x2E: return "RomWBW";
+    case 0xDB: return "CP/M (DR)";
     case 0x00: return "leer";
     }
     return "?";
@@ -374,7 +389,8 @@ static int mbr(void)
         t->start = dw(e + 8);
         t->size = dw(e + 12);
         t->hidden = t->start;
-        t->art = fattyp(t->typ) ? ART_FAT : t->typ == 0x05 ? ART_ERW : ART_ANDERS;
+        t->art = fattyp(t->typ) ? ART_FAT : t->typ == 0x05 ? ART_ERW :
+            t->typ == 0x2E ? ART_RWBW : t->typ == 0xDB ? ART_DRCPM : ART_ANDERS;
         t->sh = e[1]; t->ss = e[2] & 63; t->sc = e[3] | ((e[2] & 0xC0) << 2);
         t->eh = e[5]; t->es = e[6] & 63; t->ec = e[7] | ((e[6] & 0xC0) << 2);
     }
@@ -390,7 +406,9 @@ static void eintrag_pruefen(struct teil *t)
     if (t->boot != 0 && t->boot != 0x80)
         err("Bootkennung %02x (erlaubt 00/80)\n", t->boot);
     if (t->art == ART_ANDERS)
-        warn("Typ %02x kennt der DMV-MBR nicht (01/04/05/06)\n", t->typ);
+        warn("Typ %02x: weder DOS noch CP/M (2Eh, DBh)\n", t->typ);
+    if (t->art == ART_RWBW && t->size < RW_SLICE)
+        err("kleiner als eine Scheibe (8 MB = %lu Sektoren)\n", RW_SLICE);
     if (t->ss == 0 || t->es == 0)
         err("Sektor 0 in CHS (Partitionseintraege zaehlen ab 1)\n");
     else if (geo_ok) {
@@ -723,9 +741,9 @@ static int cpm_dir(uchar *b)
     int i, k;
 
     for (i = 0; i < 16; i++, b += 32) {
-        if (b[0] == 0xE5)
+        if (b[0] == 0xE5 || b[0] == 0x21)       /* frei, Zeitstempel */
             continue;
-        if (b[0] > 15 || b[12] > 31 || b[15] > 128)
+        if ((b[0] > 15 && b[0] != 0x20) || b[12] > 31 || b[15] > 128)
             return 0;
         for (k = 1; k < 12; k++)
             if ((b[k] & 0x7F) < 0x20 || (b[k] & 0x7F) > 0x7E)
@@ -741,39 +759,62 @@ static int cpm_dir(uchar *b)
 #define CPM_DSM     647
 #define CPM_DIRSEC  32
 
-static void cpm_half(void)
+/* Ein CP/M-Dateisystem pruefen: Verzeichnis ab Sektor dir0 (zugleich
+   Block 0), Bloecke zu spb Sektoren, hoechster Block dsm, hoechster
+   Eintrag drm; 16-Bit-Blocknummern, 8 je Eintrag (alle Formate der DMV:
+   NCR-Haelfte, RomWBW-Scheibe, DR-Bereich). Ein Verzeichnis, das nicht
+   wie CP/M aussieht (z. B. nur Nullen), heisst "nicht eingerichtet". */
+static void cpm_pruefen(ulong dir0, unsigned int spb, unsigned int dsm, unsigned int drm)
 {
-    uchar b[SECT], map[(CPM_DSM + 8) / 8];
-    unsigned int s, e, k, blk, users = 0;
-    ulong eintraege = 0, dateien = 0, bloecke = 2, doppelt = 0, aussen = 0;
+    uchar b[SECT], *map;
+    unsigned int s, e, k, blk, users = 0, dirsec = (drm + 1) / 16, dirblk;
+    unsigned int exm = spb / 4 - 1;     /* 8 Blocknummern je Eintrag */
+    ulong eintraege = 0, dateien = 0, bloecke, doppelt = 0, aussen = 0;
+    char lab[12];
 
-    memset(map, 0, sizeof(map));
-    SETB(map, 0);
-    SETB(map, 1);
-    for (s = 0; s < CPM_DIRSEC; s++) {
-        if (rd(s, b) < 0)
-            return;
+    lab[0] = 0;
+    if (rd(dir0, b) < 0)
+        return;
+    if (!cpm_dir(b)) {
+        printf("  Verzeichnis nicht eingerichtet (kein CP/M-Inhalt)\n");
+        return;
+    }
+    map = calloc(dsm / 8 + 1, 1);
+    if (!map) {
+        err("zu wenig Speicher fuer %u Bloecke\n", dsm + 1);
+        return;
+    }
+    dirblk = (dirsec + spb - 1) / spb;
+    for (k = 0; k < dirblk; k++)
+        SETB(map, k);
+    bloecke = dirblk;
+    for (s = 0; s < dirsec && !abbruch; s++) {
+        if (rd(dir0 + s, b) < 0)
+            break;
         for (e = 0; e < SECT / 32; e++) {
             uchar *d = b + e * 32;
             if (d[0] == 0xE5)
                 continue;
             if (d[0] > 15) {
-                if (d[0] != 0x20 && d[0] != 0x21)    /* Label/Zeitstempel */
+                if (d[0] == 0x20) {             /* Name des Laufwerks */
+                    memcpy(lab, d + 1, 11);
+                    lab[11] = 0;
+                } else if (d[0] != 0x21)        /* 21h: Zeitstempel */
                     warn("CP/M-Eintrag %u: User %u\n", s * 16 + e, d[0]);
                 continue;
             }
             eintraege++;
             users |= 1 << d[0];
-            if (d[14] == 0 && d[12] <= 3)
+            if (d[14] == 0 && d[12] <= exm)
                 dateien++;
             for (k = 0; k < 8; k++) {
                 blk = w(d + 16 + 2 * k);
                 if (!blk)
                     continue;
-                if (blk > CPM_DSM) {
+                if (blk > dsm) {
                     if (aussen++ < 5)
                         err("CP/M-Datei %.8s.%.3s: Block %u ueber DSM %u\n",
-                            d + 1, d + 9, blk, CPM_DSM);
+                            d + 1, d + 9, blk, dsm);
                     continue;
                 }
                 if (BIT(map, blk)) {
@@ -784,17 +825,97 @@ static void cpm_half(void)
                 SETB(map, blk);
                 bloecke++;
             }
-            if (verbose && d[14] == 0 && d[12] == 0)
+            if (verbose && d[14] == 0 && d[12] <= exm)
                 printf("    %u: %.8s.%.3s\n", d[0], d + 1, d + 9);
         }
     }
-    printf("  %lu von 512 Verzeichniseintraegen, %lu %s, User", eintraege, dateien,
-        pl(dateien, "Datei", "Dateien"));
-    for (k = 0; k < 16; k++)
-        if (users & (1 << k))
-            printf(" %u", k);
-    printf("\n  %lu Bloecke zu 8 KB belegt (mit Verzeichnis), %lu KB frei\n",
-        bloecke, (ulong)(CPM_DSM + 1 - bloecke) * 8);
+    free(map);
+    if (lab[0])
+        printf("  Name \"%s\"\n", lab);
+    if (!eintraege)
+        printf("  keine Dateien (%u Verzeichniseintraege frei)\n", drm + 1);
+    else {
+        printf("  %lu von %u Verzeichniseintraegen, %lu %s, User", eintraege, drm + 1,
+            dateien, pl(dateien, "Datei", "Dateien"));
+        for (k = 0; k < 16; k++)
+            if (users & (1 << k))
+                printf(" %u", k);
+        printf("\n");
+    }
+    printf("  %lu Bloecke zu %u KB belegt (mit Verzeichnis), %lu KB frei\n",
+        bloecke, spb / 2, (ulong)(dsm + 1 - bloecke) * (spb / 2));
+}
+
+static void cpm_half(void)
+{
+    cpm_pruefen(0, 16, CPM_DSM, 511);
+}
+
+/* DBh: Kopfblock nach DRs PC-Muster im ersten Zylinder der Partition,
+   Kopf 0, Sektor 4. 256 Worte mit Summe 0; ab 21h Lage und Geometrie,
+   ab 29h der DPB (SPT in 128-Byte-Saetzen, OFF in Spuren ab Plattenanfang),
+   ab 40h Blockgroesse/128. */
+static void dr_kopf(struct teil *t, int befunde)
+{
+    ulong l, sum = 0;
+    unsigned int i, c0, spur, bls;
+    uchar k[SECT];
+
+    t->ok = 0;
+    if (!heads || !spt)
+        return;
+    c0 = t->start / ((ulong)heads * spt);
+    l = (ulong)c0 * heads * spt + 3;
+    if (rd(l, k) < 0)
+        return;
+    for (i = 0; i < SECT; i += 2)
+        sum += w(k + i);
+    if ((sum & 0xFFFF) || w(k + 0x23) == 0) {
+        if (befunde)
+            err("kein DR-Kopfblock (Zylinder %u, Kopf 0, Sektor 4)\n", c0);
+        return;
+    }
+    spur = k[0x26] * (k[0x28] * 128 / SECT);        /* Sektoren je Spur */
+    bls = w(k + 0x40) * 128;
+    t->dsm = w(k + 0x2E);
+    t->drm = w(k + 0x30);
+    t->spb = bls / SECT;
+    t->dir0 = (ulong)w(k + 0x36) * spur;
+    t->ok = t->spb && t->dsm && (128U << k[0x2B]) == bls;
+    if (!befunde)
+        return;
+    if (!t->ok)
+        err("DR-Kopfblock: Blockgroesse %u passt nicht zu BSH %u\n", bls, k[0x2B]);
+    if (w(k + 0x21) != c0)
+        err("DR-Kopfblock nennt Zylinder %u, Partition beginnt auf %u\n", w(k + 0x21), c0);
+    if (k[0x25] != heads || k[0x26] != spt)
+        err("DR-Kopfblock: %u Koepfe/%u Sektoren, DMVGEOM1 %u/%u\n",
+            k[0x25], k[0x26], heads, spt);
+    if (t->dir0 < l + 1 || t->dir0 >= t->start + t->size)
+        err("Verzeichnis (OFF %u Spuren) ausserhalb der Partition\n", w(k + 0x36));
+    else if (t->dir0 + (ulong)(t->dsm + 1) * t->spb > t->start + t->size)
+        err("DSM %u: Bloecke reichen ueber das Partitionsende\n", t->dsm);
+    if (verbose)
+        printf("      DR-Kopfblock: Zyl. %u-%u, OFF %u, Bloecke %u KB, DSM %u, DRM %u\n",
+            c0, c0 + w(k + 0x23) - 1, w(k + 0x36), bls / 1024, t->dsm, t->drm);
+}
+
+/* 2Eh: Zahl der ganzen Scheiben, Rest in Sektoren */
+static unsigned int scheiben(struct teil *t)
+{
+    return (unsigned int)(t->size / RW_SLICE);
+}
+
+static void rw_pruefen(struct teil *t)
+{
+    unsigned int i, n = scheiben(t);
+    char z[24];
+
+    for (i = 0; i < n && !abbruch; i++) {
+        sprintf(z, "  Scheibe %u:\n", i);
+        printf("%s", z);
+        cpm_pruefen(t->start + i * RW_SLICE + RW_SYS, 8, RW_DSM, RW_DRM);
+    }
 }
 
 /* ----------------------------------------------------- Bootsektor -- */
@@ -980,6 +1101,20 @@ static void zeile(struct teil *t)
     case ART_CPM:
         strcpy(z, "CP/M, Bloecke 8 KB");
         break;
+    case ART_RWBW: {
+        unsigned int n = scheiben(t);
+        sprintf(z, "%u %s zu 8 MB", n, pl(n, "Scheibe", "Scheiben"));
+        break;
+    }
+    case ART_DRCPM:
+        still++;
+        dr_kopf(t, 0);
+        still--;
+        if (t->ok)
+            sprintf(z, "CP/M, Bloecke %u KB", t->spb / 2);
+        else
+            strcpy(z, "ohne DR-Kopfblock");
+        break;
     case ART_ERW: {
         int i, a = 0, b = 0;
         for (i = 0; i < nteile; i++)
@@ -1053,6 +1188,11 @@ static void uebersicht(int nr, const char *dev)
             if (verbose)
                 fat_einzeln(t);
         }
+        if (t->art == ART_DRCPM)
+            dr_kopf(t, 1);
+        if (t->art == ART_RWBW && t->size % RW_SLICE && verbose)
+            printf("      Rest hinter der letzten Scheibe: %lu Sektoren\n",
+                t->size % RW_SLICE);
         map_hp = 0;
     }
     if (r < 10 && aktiv != 1)
@@ -1098,6 +1238,22 @@ static void fs_pruefen(int nr, const char *dev, const char *welcher)
             halbe(t);
             printf("\nPlatte %d, Nr %s: CP/M, Bloecke zu 8 KB\n", nr, t->nr);
             cpm_half();
+        } else if (t->art == ART_RWBW) {
+            still = 0;
+            printf("\nPlatte %d, Nr %s: RomWBW, %u Scheiben zu 8 MB\n", nr, t->nr,
+                scheiben(t));
+            rw_pruefen(t);
+        } else if (t->art == ART_DRCPM) {
+            still = 1;
+            dr_kopf(t, 0);
+            still = 0;
+            if (!t->ok)
+                printf("\nPlatte %d, Nr %s: ohne DR-Kopfblock, nicht geprueft\n", nr, t->nr);
+            else {
+                printf("\nPlatte %d, Nr %s: CP/M (DR), Bloecke zu %u KB\n", nr, t->nr,
+                    t->spb / 2);
+                cpm_pruefen(t->dir0, t->spb, t->dsm, t->drm);
+            }
         } else if (welcher) {
             still = 0;
             printf("\nPlatte %d, Nr %s: kein FAT- oder CP/M-Dateisystem\n", nr, t->nr);
@@ -1263,7 +1419,8 @@ static void kurz(int i)
         sprintf(auf + strlen(auf), "%s%s%s%s", n++ ? ", " : "",
             t->nr[0] == '-' ? "" : t->nr, t->nr[0] == '-' ? "" : " ",
             t->art == ART_FAT ? (t->typ == 0x01 ? "FAT12" : "FAT16") :
-            t->art == ART_CPM ? "CP/M" : "?");
+            t->art == ART_CPM || t->art == ART_DRCPM ? "CP/M" :
+            t->art == ART_RWBW ? "RomWBW" : "?");
     }
     if (!n)
         strcat(auf, original ? "nicht erkannt" : "keine Partition");
