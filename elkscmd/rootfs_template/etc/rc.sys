@@ -32,9 +32,12 @@ fi
 
 date
 
-# NCR DMV: Hardwareuebersicht statt der Startmeldungen (dmvhd gibt es nur dort)
+# NCR DMV: Hardwareuebersicht statt der Startmeldungen (dmvhd gibt es nur
+# dort), dann als root angemeldet (Diagnosesystem, root ohne Passwort);
+# nach exit kommt die normale Anmeldung
 if test -f /bin/dmvhd; then
 	dmvhd -s
+	exec login root
 fi
 # display internal commands used
 #hash

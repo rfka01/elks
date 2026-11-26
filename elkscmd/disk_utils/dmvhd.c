@@ -1888,7 +1888,9 @@ int main(int argc, char **argv)
             art = k;
         }
     }
-    printf("\033[r\f");
+    fflush(stdout);
+    fputs("\033[r\f", stdout);  /* direkt: ein abgebrochener Seitenhalt
+                                   (abbruch) verschluckt sonst die Ausgabe */
     fflush(stdout);
     return 0;
 }
