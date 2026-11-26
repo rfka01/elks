@@ -100,13 +100,52 @@ static int taste(void)
    hervorgehoben (ESC [ 1 m, gelb bzw. invers), in Dateien entfallen sie */
 static int hervor;
 
+/* Seitenhalt: Hinweis zeigen, auf Eingabetaste oder Q warten.
+   1 = abgebrochen (Rest der Seite verwerfen) */
+static int halt(void)
+{
+    int c;
+
+    fflush(stdout);
+    if (menue)                  /* Hinweis in der Statuszeile, dann zurueck */
+        fputs("\033[25;1H\033[K-- weiter mit Eingabetaste, \033[1mQ\033[0m bricht ab --",
+            stdout);
+    else
+        fputs("-- weiter mit Eingabetaste, q bricht ab --", stderr);
+    fflush(stdout);
+    do                          /* ohne Echo: die Zeile wird wieder geloescht */
+        c = taste();
+    while (c != '\n' && c != '\r' && c != 'q');
+    if (menue)
+        fputs("\033[25;1H\033[K\033[24;1H", stdout);
+    else
+        fputs("\r                                          \r", stderr);
+    if (c == 'q') {
+        abbruch = 1;
+        return 1;
+    }
+    zeilen = 0;
+    return 0;
+}
+
+/* Marke 03h: Ende einer Hilfeseite. Am Bildschirm halten und die
+   naechste Seite auf leerem Bildschirm beginnen, sonst Leerzeile. */
 static void seite(const char *s)
 {
-    int c[1];
-
     if (stumm)
         return;
     for (; *s && !abbruch; s++) {
+        if (*s == 3) {
+            if (!seitenweise) {
+                putchar('\n');
+                continue;
+            }
+            if (halt())
+                return;
+            putchar('\f');
+            zeilen = spalte = 0;
+            continue;
+        }
         if (*s == 1 || *s == 2) {
             if (hervor)
                 fputs(*s == 1 ? "\033[1m" : "\033[0m", stdout);
@@ -117,27 +156,8 @@ static void seite(const char *s)
             zeilen = spalte = 0;
             continue;
         }
-        if (seitenweise && zeilen >= SEITE - menue) {
-            fflush(stdout);
-            if (menue)          /* Hinweis in der Statuszeile, dann zurueck */
-                fputs("\033[25;1H\033[K-- weiter mit Eingabetaste, \033[1mQ\033[0m bricht ab --",
-                    stdout);
-            else
-                fputs("-- weiter mit Eingabetaste, q bricht ab --", stderr);
-            fflush(stdout);
-            do                  /* ohne Echo: die Zeile wird wieder geloescht */
-                c[0] = taste();
-            while (c[0] != '\n' && c[0] != '\r' && c[0] != 'q');
-            if (menue)
-                fputs("\033[25;1H\033[K\033[24;1H", stdout);
-            else
-                fputs("\r                                          \r", stderr);
-            if (c[0] == 'q') {
-                abbruch = 1;    /* Rest der Seite verwerfen */
-                return;
-            }
-            zeilen = 0;
-        }
+        if (seitenweise && zeilen >= SEITE - menue && halt())
+            return;
         putchar(*s);
         if ((*s & 0xC0) == 0x80)    /* UTF-8-Folgebyte: keine neue Spalte */
             continue;
@@ -1262,16 +1282,17 @@ static void zeile(struct teil *t)
         typ, anf, end, t->size / 2, z);
 }
 
-/* Zeile darunter: LBA (bzw. Kopfpaar) und was der Teil selbst sagt */
+/* Einzelheiten unter der Tabelle: LBA (bzw. Kopfpaar) und was der Teil
+   selbst sagt; die Befunde folgen darunter */
 static void einzeln(struct teil *t)
 {
     char z[100];
 
     if (t->halb)
-        sprintf(z, "      Kopf %d-%d, %lu Sektoren", 2 * t->halb - 2, 2 * t->halb - 1,
-            t->size);
+        sprintf(z, "%-4sKopf %d-%d, %lu Sektoren", t->nr, 2 * t->halb - 2,
+            2 * t->halb - 1, t->size);
     else
-        sprintf(z, "      LBA %lu-%lu", t->start, t->start + t->size - 1);
+        sprintf(z, "%-4sLBA %lu-%lu", t->nr, t->start, t->start + t->size - 1);
     switch (t->art) {
     case ART_FAT:
         if (bpb_lesen(t) == 0)
@@ -1332,12 +1353,17 @@ static void uebersicht(int nr, const char *dev)
     }
     printf("\n");
     seite(kopf_struktur);
-    for (i = 0; i < nteile; i++) {
+    for (i = 0; i < nteile; i++) {     /* Tabelle: eine Zeile je Teil */
         t = &teile[i];
         zeile(t);
-        einzeln(t);
+        map_hp = 0;
         if (t->boot == 0x80)
             aktiv++;
+    }
+    printf("\nEinzelheiten und Befunde\n");
+    for (i = 0; i < nteile; i++) {
+        t = &teile[i];
+        einzeln(t);
         if (r < 10 && t->nr[0] >= '1' && t->nr[0] <= '4' && !t->nr[1])
             eintrag_pruefen(t);
         if (t->art == ART_FAT && bpb_lesen(t) == 0) {
@@ -1423,7 +1449,29 @@ static void fs_pruefen(int nr, const char *dev, const char *welcher)
 
 /* --------------------------------------------------------- Hilfe -- */
 static const char erklaerung[] =
-"\001Hilfe 1/2: Geräteseite und Kürzel\002\n"
+"\001Hilfe 1/3: Klassische und neue DMV-Festplatten\002\n"
+"\n"
+"Klassisch: NCR-Originalformat (CONFIG bzw. FMT20 von MS-DOS 2.11)\n"
+"  - keine Partitionstabelle (kein 55AA), keine Geometrie auf der Platte;\n"
+"    immer 4 Köpfe und 17 Sektoren, auch auf größeren Laufwerken\n"
+"  - feste Aufteilung: 1 x 10 MB oder 1 x 20 MB (DOS über alle 4 Köpfe),\n"
+"    oder 2 x 5 MB: Hälfte A auf Kopf 0-1, B auf Kopf 2-3, je DOS oder CP/M\n"
+"  - DOS: FAT12, Bootsektor \"16BIT\"; CP/M: Blöcke 8 KB, 512 Einträge,\n"
+"    CP/M startet nicht von der Platte\n"
+"\n"
+"Neu: DMVHDFMT und FDISK der DMV-Ports (MS-DOS 3.3, DR DOS 3.41)\n"
+"  - Sektor 0: DMV-MBR mit \"16BIT\" und Partitionstabelle (55AA);\n"
+"    Sektor 1-2: DMVGEOM1 mit der echten Geometrie (bis 1024/8/17)\n"
+"  - 4 Einträge, dazu eine erweiterte Partition mit logischen Laufwerken\n"
+"  - DOS: FAT12/FAT16 bis 32 MB (Typ 01/04), FAT16 darüber nur DR DOS (06)\n"
+"  - CP/M: Typ 2E mit Scheiben zu 8 MB (RomWBW) für alle CP/M-Fassungen,\n"
+"    Typ DB nach DRs Muster für große Laufwerke (Concurrent CP/M-86)\n"
+"  - der MBR startet die aktive Partition von HD1, HD2 oder HD3\n"
+"\n"
+"Die DOS-Ports lesen nur neue Platten, alte liest HDIMPORT unter\n"
+"MS-DOS 3.3. dmvhd liest beide.\n"
+"\003"
+"\001Hilfe 2/3: Geräteseite und Kürzel\002\n"
 "\n"
 "HD 1-3          /dev/cfa, cfb, cfc: Einheit 0-2 am WD1001 (K012)\n"
 "Größe,          ganze Platte nach dem DMVGEOM1-Block. Mit ? (NCR-Original-\n"
@@ -1445,8 +1493,8 @@ static const char erklaerung[] =
 "FDISK von MS-DOS 3.3 zeigt Typ 2E und DB als \"Non-DOS\" und löscht sie\n"
 "nicht. DR-FDISK nennt DB \"CP/M\" und löscht es; 2E und 52 heißen dort\n"
 "\"(other)\" und lassen sich nur mit FDISK /D löschen.\n"
-"\n"
-"\001Hilfe 2/2: Strukturseite, Dateisysteme, Tasten\002\n"
+"\003"
+"\001Hilfe 3/3: Strukturseite, Dateisysteme, Tasten\002\n"
 "\n"
 "DMVGEOM1        Geometrieblock der DMV-Ports (Zylinder 0, Kopf 0, Sektor-\n"
 "                ID 1, Kopie auf ID 2). Ohne ihn gilt die Einheit für\n"
@@ -1454,10 +1502,11 @@ static const char erklaerung[] =
 "Bootsatz        Sektor 0: 16BIT ab Byte 3 braucht das Z80-ROM zum Start,\n"
 "                55AA kennzeichnet die Tabelle. Eine einzelne Partition legt\n"
 "                DR-FDISK in Eintrag 4.\n"
-"Anfang, Ende    Zylinder/Kopf/Sektor. Darunter LBA (bzw. Kopfpaar) und\n"
-"                was der Teil selbst sagt: OEM und FATs aus dem Bootsektor\n"
-"                (MS-DOS 3.3 braucht \"IBM  3.3\", im Originalformat ist\n"
-"                \"16BIT\" richtig), Scheiben, DR-Kopfblock.\n"
+"Anfang, Ende    Zylinder/Kopf/Sektor des ersten und letzten Sektors.\n"
+"Einzelheiten    unter der Tabelle je Nr: LBA (bzw. Kopfpaar), OEM und FATs\n"
+"                aus dem Bootsektor (MS-DOS 3.3 braucht \"IBM  3.3\", im\n"
+"                Originalformat ist \"16BIT\" richtig), Rest hinter den\n"
+"                Scheiben, DR-Kopfblock; darunter die Befunde zu dieser Nr.\n"
 "Dateisysteme    FAT: Kopien, Cluster, Ketten, Verzeichnisse, verlorene\n"
 "                Cluster. CP/M: Verzeichnis und Blöcke je Hälfte, je\n"
 "                RomWBW-Scheibe (4-KB-Blöcke) oder DR-Bereich (DPB aus dem\n"
@@ -1676,8 +1725,8 @@ static void startseite(void)
         cpu > 512 ? "K235+ (V20 mit 8259, sieht über 512 KB)" :
         "K235 (8088/V20 mit Interruptcontroller 8259)");
     printf("Disketten        Schritttest im Menü von dmvhd (Taste L)\n\n");
-    geraete(1);
-    printf("\nEinzelheiten, Strukturen und Dateisysteme: dmvhd\n");
+    geraete(0);                 /* Geraete durch Leerzeilen getrennt */
+    printf("Einzelheiten, Strukturen und Dateisysteme: dmvhd\n");
 }
 
 /* ------------------------------------------ Diskettenlaufwerke -- */
