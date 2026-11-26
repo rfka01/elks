@@ -96,6 +96,10 @@ static int taste(void)
     return (c >= 'A' && c <= 'Z') ? c + 32 : c;
 }
 
+/* Titelzeilen stehen zwischen den Marken 01h und 02h: am Bildschirm
+   hervorgehoben (ESC [ 1 m, gelb bzw. invers), in Dateien entfallen sie */
+static int hervor;
+
 static void seite(const char *s)
 {
     int c[1];
@@ -103,6 +107,11 @@ static void seite(const char *s)
     if (stumm)
         return;
     for (; *s && !abbruch; s++) {
+        if (*s == 1 || *s == 2) {
+            if (hervor)
+                fputs(*s == 1 ? "\033[1m" : "\033[0m", stdout);
+            continue;
+        }
         if (*s == '\f') {      /* neue Seite: Bildschirm loeschen */
             putchar(*s);
             zeilen = spalte = 0;
@@ -357,12 +366,12 @@ static void geometrie(void)
 static void geo_zeilen(int nr, const char *dev)
 {
     if (!geo_ok) {
-        printf("Platte %d (%s): kein DMVGEOM1, gelesen mit 4 Köpfen, 17 Sektoren\n",
+        printf("\001Platte %d (%s): kein DMVGEOM1, gelesen mit 4 Köpfen, 17 Sektoren\002\n",
             nr, dev);
         warn("ohne DMVGEOM1 fehlt die Einheit für die DOS-Ports\n");
         return;
     }
-    printf("Platte %d (%s): %lu KB, %u Zylinder, %u Köpfe, %u Sektoren je Spur\n",
+    printf("\001Platte %d (%s): %lu KB, %u Zylinder, %u Köpfe, %u Sektoren je Spur\002\n",
         nr, dev, disksects / 2, cyls, heads, spt);
     printf("  DMVGEOM1: Precomp %lu, Landezone %lu, Schritt %u, Interleave %u\n",
         geo_pre, geo_land, geo_schritt, geo_il);
@@ -771,17 +780,36 @@ static int cpm_dir(uchar *b)
    Eintrag drm; 16-Bit-Blocknummern, 8 je Eintrag (alle Formate der DMV:
    NCR-Haelfte, RomWBW-Scheibe, DR-Bereich). Ein Verzeichnis, das nicht
    wie CP/M aussieht (z. B. nur Nullen), heisst "nicht eingerichtet". */
-static void cpm_pruefen(ulong dir0, unsigned int spb, unsigned int dsm, unsigned int drm)
+static void cpm_pruefen(ulong dir0, unsigned int spb, unsigned int dsm, unsigned int drm,
+    const char *kopf)
 {
     uchar b[SECT], *map;
     unsigned int s, e, k, blk, users = 0, dirsec = (drm + 1) / 16, dirblk;
     unsigned int exm = spb / 4 - 1;     /* 8 Blocknummern je Eintrag */
     ulong eintraege = 0, dateien = 0, bloecke, doppelt = 0, aussen = 0;
     char lab[12];
+    int gezeigt = 0;
 
     lab[0] = 0;
     if (rd(dir0, b) < 0)
         return;
+    if (kopf) {         /* Kopfzeile, mit dem Namen des Laufwerks, wenn er
+                           im ersten Verzeichnissektor steht (CP/M 3) */
+        for (e = 0; e < SECT / 32; e++)
+            if (b[e * 32] == 0x20 && cpm_dir(b)) {
+                memcpy(lab, b + e * 32 + 1, 11);
+                for (k = 11; k && lab[k - 1] == ' '; k--)
+                    ;
+                lab[k] = 0;
+                gezeigt = 1;
+                break;
+            }
+        if (gezeigt && lab[0])
+            printf("%s \"%s\":\n", kopf, lab);
+        else
+            printf("%s:\n", kopf);
+        lab[0] = 0;
+    }
     if (!cpm_dir(b)) {
         printf("  Verzeichnis nicht eingerichtet (kein CP/M-Inhalt)\n");
         return;
@@ -804,8 +832,10 @@ static void cpm_pruefen(ulong dir0, unsigned int spb, unsigned int dsm, unsigned
                 continue;
             if (d[0] > 15) {
                 if (d[0] == 0x20) {             /* Name des Laufwerks */
-                    memcpy(lab, d + 1, 11);
-                    lab[11] = 0;
+                    if (!gezeigt) {
+                        memcpy(lab, d + 1, 11);
+                        lab[11] = 0;
+                    }
                 } else if (d[0] != 0x21)        /* 21h: Zeitstempel */
                     warn("CP/M-Eintrag %u: User %u\n", s * 16 + e, d[0]);
                 continue;
@@ -855,7 +885,7 @@ static void cpm_pruefen(ulong dir0, unsigned int spb, unsigned int dsm, unsigned
 
 static void cpm_half(void)
 {
-    cpm_pruefen(0, 16, CPM_DSM, 511);
+    cpm_pruefen(0, 16, CPM_DSM, 511, 0);
 }
 
 /* DBh: Kopfblock nach DRs PC-Muster im ersten Zylinder der Partition,
@@ -917,9 +947,8 @@ static void rw_pruefen(struct teil *t)
     char z[24];
 
     for (i = 0; i < n && !abbruch; i++) {
-        sprintf(z, "  Scheibe %u:\n", i);
-        printf("%s", z);
-        cpm_pruefen(t->start + i * RW_SLICE + RW_SYS, 8, RW_DSM, RW_DRM);
+        sprintf(z, "  Scheibe %u", i);
+        cpm_pruefen(t->start + i * RW_SLICE + RW_SYS, 8, RW_DSM, RW_DRM, z);
     }
 }
 
@@ -1377,7 +1406,7 @@ static void fs_pruefen(int nr, const char *dev, const char *welcher)
             else {
                 printf("\nPlatte %d, Nr %s: CP/M (DR), Blöcke zu %u KB\n", nr, t->nr,
                     t->spb / 2);
-                cpm_pruefen(t->dir0, t->spb, t->dsm, t->drm);
+                cpm_pruefen(t->dir0, t->spb, t->dsm, t->drm, 0);
             }
         } else if (welcher) {
             still = 0;
@@ -1394,7 +1423,7 @@ static void fs_pruefen(int nr, const char *dev, const char *welcher)
 
 /* --------------------------------------------------------- Hilfe -- */
 static const char erklaerung[] =
-"Hilfe 1/2: Geräteseite und Kürzel\n"
+"\001Hilfe 1/2: Geräteseite und Kürzel\002\n"
 "\n"
 "HD 1-3          /dev/cfa, cfb, cfc: Einheit 0-2 am WD1001 (K012)\n"
 "Größe,          ganze Platte nach dem DMVGEOM1-Block. Mit ? (NCR-Original-\n"
@@ -1417,7 +1446,7 @@ static const char erklaerung[] =
 "nicht. DR-FDISK nennt DB \"CP/M\" und löscht es; 2E und 52 heißen dort\n"
 "\"(other)\" und lassen sich nur mit FDISK /D löschen.\n"
 "\n"
-"Hilfe 2/2: Strukturseite, Dateisysteme, Tasten\n"
+"\001Hilfe 2/2: Strukturseite, Dateisysteme, Tasten\002\n"
 "\n"
 "DMVGEOM1        Geometrieblock der DMV-Ports (Zylinder 0, Kopf 0, Sektor-\n"
 "                ID 1, Kopie auf ID 2). Ohne ihn gilt die Einheit für\n"
@@ -1472,9 +1501,9 @@ static void ausgabe(int art, const char *nr)
     if (art != 'd')
         verbose = art == 'v';   /* bei d: -v zeigt die Dateien */
     if (art == 'd')
-        printf("Dateisysteme prüfen (dmvfs), nur lesend\n");
+        printf("\001Dateisysteme prüfen (dmvfs), nur lesend\002\n");
     else
-        printf("dmvhd - Plattendiagnose NCR DMV, nur lesend\n");
+        printf("\001dmvhd - Plattendiagnose NCR DMV, nur lesend\002\n");
     for (i = 0; i < ndev && !abbruch; i++) {
         if (art == 'd')
             fs_pruefen(pnr(i), devs[i], nr);
@@ -1635,7 +1664,7 @@ static void startseite(void)
 #ifdef __ia16__
     sleep(5);                   /* Tux und die Startmeldungen stehen lassen */
 #endif
-    printf("\fNCR Decision Mate V - ELKS-Prüfsystem %s, nur lesend\n\n", DMV_VERSION);
+    printf("\f\001NCR Decision Mate V - ELKS-Prüfsystem %s, nur lesend\002\n\n", DMV_VERSION);
     speicher(&z80, &cpu);
     if (cpu > 512)
         printf("Arbeitsspeicher  %u KB, davon nutzt ELKS 512 KB\n", cpu);
@@ -1735,7 +1764,7 @@ static void disketten(void)
 {
     int u, st0, st3;
 
-    printf("Diskettenlaufwerke: Schritttest\n\n");
+    printf("\001Diskettenlaufwerke: Schritttest\002\n\n");
     printf("Je Laufwerk: Spur 0 suchen, 44 Spuren hinein, 43 zurück. Mit 40\n");
     printf("Spuren läuft der Kopf am Anschlag auf und meldet danach Spur 0, mit\n");
     printf("80 Spuren steht er auf Spur 1. Im Laufwerk muss eine Diskette liegen\n");
@@ -1805,6 +1834,7 @@ int main(int argc, char **argv)
             n++;
         }
     }
+    hervor = isatty(1);
     if (!isatty(1) || !isatty(0))
         seitenweise = 0;
     ndev = n ? n : 3;
@@ -1841,7 +1871,7 @@ int main(int argc, char **argv)
         fehler = warnungen = 0;
         printf("\f");
         if (art == 'g') {
-            printf("dmvhd - Plattendiagnose NCR DMV, nur lesend\n\n");
+            printf("\001dmvhd - Plattendiagnose NCR DMV, nur lesend\002\n\n");
             geraete(0);
             seite(fuss_geraete);
         } else if (art == 'h')
@@ -1855,7 +1885,7 @@ int main(int argc, char **argv)
                 printf("Platte %d gibt es nicht.\n", wahl);
             else if (art == 'd') {
                 verbose = 0;
-                printf("Platte %d: Dateisysteme prüfen\n", wahl);
+                printf("\001Platte %d: Dateisysteme prüfen\002\n", wahl);
                 fs_pruefen(wahl, devs[i], 0);
                 printf("\n%d Fehler, %d %s\n", fehler, warnungen,
                     pl(warnungen, "Warnung", "Warnungen"));
